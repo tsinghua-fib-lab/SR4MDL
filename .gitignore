@@ -1,0 +1,6 @@
+weights/
+results/
+__pycache__/
+*.pyc
+*.egg-info/
+.vscode/

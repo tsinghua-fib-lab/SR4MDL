@@ -6,6 +6,7 @@ import torch
 import logging
 import traceback
 import numpy as np
+import pandas as pd
 from argparse import ArgumentParser
 from setproctitle import setproctitle
 from sr4mdl.env import sympy2eqtree, str2sympy, Tokenizer, Add, Sub, Mul, Div, Pow, Sqrt, Cos, Sin, Pow2, Pow3, Exp, Inv, Neg, Arcsin, Arccos, Cot, Log, Tanh, Number, Variable
@@ -17,7 +18,7 @@ from sr4mdl.utils import set_seed, init_logger, set_signal, AutoGPU, AttrDict, p
 logger = logging.getLogger('my.main')
 
 parser = ArgumentParser()
-parser.add_argument('-f', '--function', type=str, default='f=x0+x1*sin(x2)', help='`f=...\' or `Feynman_xxx\'')
+parser.add_argument('-f', '--function', type=str, default='f=x1+x2*sin(x3)', help='`f=...\' or `Feynman_xxx\'')
 parser.add_argument('-n', '--name', type=str, default=None)
 parser.add_argument('-s', '--seed', type=int, default=0)
 parser.add_argument('--device', type=str, default='auto')
@@ -51,8 +52,8 @@ args.function = args.function.replace(' ', '')
 
 
 def search():
-    if args.function.startswith('f='):
-        f = sympy2eqtree(str2sympy(args.function.removeprefix('f=')))
+    if '=' in args.function:
+        f = sympy2eqtree(str2sympy(args.function.split('=', 1)[1]))
         binary = list(set(op.__class__ for op in f.preorder() if op.n_operands == 2))
         unary = list(set(op.__class__ for op in f.preorder() if op.n_operands == 1))
         leaf = list(set(op for op in f.preorder() if isinstance(op, Number)))
@@ -69,8 +70,8 @@ def search():
     else:
         import pmlb
         logger.info(f'fetching {args.function} from PMLB...')
-        os.makedirs('./data/pmlb/datasets', exist_ok=True)
-        df = pmlb.fetch_data(args.function, local_cache_dir='./data/PMLB/')
+        os.makedirs('./data/cache', exist_ok=True)
+        df = pmlb.fetch_data(args.function, local_cache_dir='./data/cache/')
         if df.shape[0] > args.sample_num: 
             df = df.sample(args.sample_num)
         else: 
@@ -89,8 +90,9 @@ def search():
             'variables': list(X.keys()),
         }
         try:
-            eqtrees = yaml.load(open('./data/feynman_strogatz_eqs.yaml', 'r'), Loader=yaml.Loader)
-            target, eq = eqtrees[args.function].split(' = ', 1)
+            metadata = yaml.load(open(f'./data/pmlb/datasets/{args.function}/metadata.yaml', 'r'), Loader=yaml.Loader)['description']
+            metadata = [l.strip() for l in metadata.split('\n')]
+            target, eq = metadata[metadata.index('')+1].split(' = ', 1)
             eq = sympy2eqtree(str2sympy(eq))
             log['target function'] = log['target function'] + ' ({} = {})'.format(target, eq.to_str(number_format=".2f"))
             if args.cheat:
@@ -101,7 +103,7 @@ def search():
                 log['unary operators'] = [op.__name__ for op in unary]
                 log['leaf'] = [op.to_str(number_format=".2f") for op in leaf]
         except Exception as e:
-            logger.error(e)
+            logger.warning(e)
     logger.note('\n'.join(f'{k}: {v if not isinstance(v, list) else "[" + ", ".join(v) + "]"}' for k, v in log.items()))
 
     tokenizer = Tokenizer(-100, 100, 4, args.max_var)

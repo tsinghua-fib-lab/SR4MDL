@@ -20,5 +20,6 @@ setup(
         'psutil',
         'setproctitle',
         'scikit-learn',
+        # 'pmlb @ git+https://github.com/EpistasisLab/pmlb.git',
     ],
 )

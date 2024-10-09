@@ -6,7 +6,7 @@ from sr4mdl.utils import set_seed, set_proctitle, set_signal, init_logger, AutoG
 from sr4mdl.utils.metrics import RMSE_score, R2_score, kendall_rank_score, spearman_rank_score, pearson_score, AUC_score, NDCG_score
 
 # Get args
-args = get_args(save_dir='./results')
+args = get_args(save_dir='./results/test')
 
 # Init
 init_logger(exp_name=args.name, log_file=os.path.join(args.save_dir, 'info.log'), quiet=args.quiet)

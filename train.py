@@ -5,13 +5,14 @@ import traceback
 import numpy as np
 import torch.nn as nn
 from sr4mdl.utils import set_seed, set_proctitle, set_signal, init_logger, AutoGPU, get_args
+from sr4mdl.model import MDLformer, FormulaEncoder, Trainer
 
 # Get args
-args = get_args(save_dir='./results')
+args = get_args(save_dir='./results/train/')
 
 # Init
 init_logger(exp_name=args.name, log_file=os.path.join(args.save_dir, 'info.log'), quiet=args.quiet)
-logger = logging.getLogger('my.main')
+logger = logging.getLogger('my.train')
 logger.info(args)
 set_signal()
 set_seed(args.seed)
@@ -53,7 +54,6 @@ def train():
     loader = dataset.get_dataloader(batch_size=args.batch_size, num_workers=args.num_workers)
 
     # Load model
-    from sr4mdl.model.mdlformer import MDLformer, FormulaEncoder, Trainer
     mdlformer = MDLformer(args, dataset.get_token_list())
     eq_encoder = FormulaEncoder(args, dataset.get_token_list(all=True))
     if 'device_ids' in args:

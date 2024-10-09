@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import logging
 from argparse import ArgumentParser
 from .attr_dict import AttrDict
@@ -55,6 +56,7 @@ def parse_parser(parser: ArgumentParser, save_dir='./results'):
 
     if unknown: logger.warning(f'Unknown args: {unknown}')
     args.name = args.name or f'{time.strftime("%Y%m%d_%H%M%S")}'
+    args.seed = args.seed or random.randint(1, 32768)
 
     args.save_dir = os.path.join(save_dir, args.name)
     if os.path.exists(args.save_dir) and args.continue_from != args.name:

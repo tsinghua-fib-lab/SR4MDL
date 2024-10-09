@@ -1,1 +1,1 @@
-from mcts import MCTS4MDL
+from .mcts import MCTS4MDL

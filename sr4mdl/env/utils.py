@@ -56,6 +56,14 @@ def str2sympy(eq:str, variables=['alpha', 'beta', 'gamma', 'I']):
     return sp.parse_expr(eq, local_dict={var:sp.Symbol(var) for var in variables})
 
 
+def simplify(eq:Symbol):
+    try:
+        variables = list(set(var.name for var in eq.preorder() if isinstance(var, Variable)))
+        return sympy2eqtree(sp.simplify(str2sympy(str(eq), variables)), merge_numbers=True)
+    except:
+        return eq.copy()
+
+
 def decompose(eqtrees:Symbol|List[Symbol], 
               route:List[List[Symbol]]=[],
               route2:List[Symbol]=[Empty()]) -> Generator[List[Tuple[List[Symbol], Symbol]], None, None]:

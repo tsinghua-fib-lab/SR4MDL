@@ -13,8 +13,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.amp import autocast, GradScaler
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.ticker import PercentFormatter
-from .utils import MLP, noam_lambda, Timer, NamedTimer, AttentionPooling, CLIPLoss
-from ..utils import AttrDict, R2_score, RMSE_score, AUC_score
+from .utils import MLP, noam_lambda, AttentionPooling, CLIPLoss
+from ..utils import AttrDict, R2_score, RMSE_score, AUC_score, Timer, NamedTimer
 
 import warnings
 warnings.filterwarnings("ignore", message="The PyTorch API of nested tensors is in prototype stage and will change in the near future.")

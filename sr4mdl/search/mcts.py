@@ -208,7 +208,8 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
                 log['Complexity'] = self.best.complexity
                 log['R2'] = f'{self.best.r2:.5f}'
                 log['MDL'] = f'{self.best.MDL:.5f}'
-                log['Best equation'] = str(self.best)
+                log['Best'] = str(self.best)
+                log['Best equation'] = str(self.best.phi)
                 log['Speed'] = f'{record['speed'][0]:.2f} step/s ({record['speed'][1]:.2f} node/s)'
                 tot = sum(record['detailed_time'].values())
                 log['Time'] = f'{tot*1000:.0f}ms (' + ','.join(f'{n}={t/tot:.0%}' for n, t in record['detailed_time'].items()) + ')'
@@ -409,34 +410,66 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
             node.reward = 0.0
 
 
-        # try:
-        #     Z_ = np.log(np.abs(Z).clip(1e-10, None))
-        #     Z_[:, 0] = 1.0
-        #     y_ = np.log(np.abs(y).clip(1e-10, None))
-        #     assert np.isfinite(Z_).all() and np.isfinite(y_).all()
-        #     A, residuals, _, _ = np.linalg.lstsq(Z_[train_idx, :], y_[train_idx], rcond=None)
-        #     R2 = 1 - np.mean((y_[eval_idx] - Z_[eval_idx, :] @ A)**2) / np.var(y_[eval_idx])
-        #     reward = self.eta ** node.complexity / (2 - R2)
-        #     if reward > node.reward:
-        #         node.r2 = R2
-        #         node.reward = reward
-
-        #         A = np.round(A, 3)
-        #         node.phi = Number(np.exp(A[0]))
-        #         for a, op in zip(A[1:], node.eqtrees):
-        #             if a == 0: continue
-        #             elif a == 1: node.phi = Mul(node.phi, op)
-        #             elif a == -1: node.phi = Div(node.phi, op)
-        #             elif a == 2: node.phi = Mul(node.phi, Pow2(op))
-        #             elif a == -2: node.phi = Div(node.phi, Pow2(op))
-        #             elif a == 3: node.phi = Mul(node.phi, Pow3(op))
-        #             elif a == -3: node.phi = Div(node.phi, Pow3(op))
-        #             elif a > 0: node.phi = Mul(node.phi, Pow(op, Number(a)))
-        #             elif a < 0: node.phi = Div(node.phi, Pow(op, Number(-a)))
-        #             else: raise ValueError(f'Unknown a: {a}')
-        # except Exception as e:
-        #     # logger.warning(str(e))
-        #     node.r2 = -np.inf
-        #     node.reward = 0.0
+        # prod model as phi: y = phi(f1, f2, ...) = a0 * |f1|^a1 * |f2|^a2 * ...
+        try:
+            Z_ = np.log(np.abs(Z).clip(1e-10, None))
+            Z_[:, 0] = 1.0
+            y_ = np.log(np.abs(y).clip(1e-10, None))
+            assert np.isfinite(Z_).all() and np.isfinite(y_).all()
+            A, _, _, _ = np.linalg.lstsq(Z_[train_idx, :], y_[train_idx], rcond=None)
+            A[0] = np.exp(A[0])
+            A = np.round(A, 6)
+            prod = 1
+            for z, a in zip(Z[:, 1:].T, A[1:]):
+                prod *= np.abs(z) ** a
+            A[0] *= np.sign(np.median(y[train_idx] / (A[0] * prod[train_idx]).clip(1e-6)))
+            r2 = R2_score(y[eval_idx], A[0] * prod[eval_idx])
+            reward = self.eta ** node.complexity / (2 - r2)
+            if reward > node.reward:
+                node.r2 = r2
+                node.reward = reward
+                node.phi = Number(A[0]) if A[0] != 1 else None
+                for idx, (a, op) in enumerate(zip(A[1:], node.eqtrees), 1):
+                    if (Z[idx]<0).any(): op = Abs(op)
+                    if a == 0: pass
+                    elif a == 1: 
+                        if node.phi is None: node.phi = op
+                        else: node.phi *= op
+                    elif a == -1: 
+                        if node.phi is None: node.phi = Inv(op)
+                        else: node.phi /= op
+                    elif a == 2:
+                        if node.phi is None: node.phi = Pow2(op)
+                        else: node.phi *= Pow2(op)
+                    elif a == -2:
+                        if node.phi is None: node.phi = Inv(Pow2(op))
+                        else: node.phi /= Pow2(op)
+                    elif a == 3:
+                        if node.phi is None: node.phi = Pow3(op)
+                        else: node.phi *= Pow3(op)
+                    elif a == -3:
+                        if node.phi is None: node.phi = Inv(Pow3(op))
+                        else: node.phi /= Pow3(op)
+                    elif a == 0.5:
+                        if node.phi is None: node.phi = Sqrt(op)
+                        else: node.phi *= Sqrt(op)
+                    elif a == -0.5:
+                        if node.phi is None: node.phi = Inv(Sqrt(op))
+                        else: node.phi /= Sqrt(op)
+                    elif a > 0:
+                        if node.phi is None: node.phi = op ** Number(a)
+                        else: node.phi *= op ** Number(a)
+                    elif a < 0:
+                        if node.phi is None: node.phi = Inv(op ** Number(-a))
+                        else: node.phi /= op ** Number(-a)
+                    else: raise ValueError(f'Unknown a: {a}')
+                if node.phi is None: node.phi = Number(1.0)
+                node.complexity = len(node.phi)
+        except Exception as e:
+            logger.warning(traceback.format_exc())
+            # logger.warning(str(e))
+            node.r2 = -np.inf
+            node.complexity = np.inf
+            node.reward = 0.0
         
         if not np.isfinite(node.reward): node.reward = 0.0

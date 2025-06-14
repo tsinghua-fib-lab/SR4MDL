@@ -3,9 +3,9 @@ import time
 import random
 import logging
 from argparse import ArgumentParser
-from .attr_dict import AttrDict
+from nd2py.utils import AttrDict
 
-logger = logging.getLogger('my.utils.parser')
+logger = logging.getLogger(__name__)
 
 
 def get_parser() -> ArgumentParser:
@@ -59,7 +59,7 @@ def parse_parser(parser: ArgumentParser, save_dir='./results'):
     args.seed = args.seed or random.randint(1, 32768)
 
     args.save_dir = os.path.join(save_dir, args.name)
-    if os.path.exists(args.save_dir) and args.continue_from != args.name:
+    if os.path.exists(args.save_dir) and getattr(args, 'continue_from', None) != args.name:
         args.name = args.name + '-' + time.strftime("%Y%m%d_%H%M%S")
         args.save_dir = os.path.join(save_dir, args.name)
     os.makedirs(args.save_dir, exist_ok=True)

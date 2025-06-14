@@ -1,0 +1,3 @@
+[submodule "nd2py_package"]
+	path = nd2py_package
+	url = http://github.com/yuzhTHU/nd2py

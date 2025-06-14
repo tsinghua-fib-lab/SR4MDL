@@ -1,3 +1,5 @@
+playground/
+benchmark/
 weights/
 results/
 data/
@@ -5,3 +7,4 @@ __pycache__/
 *.pyc
 *.egg-info/
 .vscode/
+venv/

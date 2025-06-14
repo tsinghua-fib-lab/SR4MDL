@@ -1,22 +1,22 @@
 import random
 import logging
 import numpy as np
+import nd2py as nd
 from typing import Tuple, List
 from collections import defaultdict
-from ..env import Symbol, Variable, Number, Empty, decompose
-from ..env import Add, Sub, Mul, Div, Abs, Inv, Sqrt, Log, Exp, Sin, Arcsin, Cos, Arccos, Tan, Arctan, Pow2, Pow3
+from ..env import decompose
 
 logger = logging.getLogger('EqtreeGenerator')
 
 class SimpleGenerator:
     def __init__(self, max_param=2, max_unary=4, max_var=5, **kwargs):
-        self.binary = [Add, Sub, Mul, Div]
-        self.unary = [Abs, Inv, Sqrt, Log, Exp, Sin, Arcsin, Cos, Arccos, Tan, Arctan, Pow2, Pow3]
+        self.binary = [nd.Add, nd.Sub, nd.Mul, nd.Div]
+        self.unary = [nd.Abs, nd.Inv, nd.Sqrt, nd.Log, nd.Exp, nd.Sin, nd.Arcsin, nd.Cos, nd.Arccos, nd.Tan, nd.Arctan, nd.Pow2, nd.Pow3]
         self.max_param = max_param
         self.max_unary = max_unary
         self.max_var = max_var
 
-    def generate_eqtree(self, length:int) -> Symbol:
+    def generate_eqtree(self, length:int) -> nd.Symbol:
         # n_binary_op + n_variable + n_parameter = length - n_unary_op
         # n_binary_op - n_variable - n_parameter = -1
 
@@ -26,7 +26,7 @@ class SimpleGenerator:
         n_parameter = np.random.randint(0, min(self.max_param, n_binary_op)+1)
         n_variable = n_binary_op + 1 - n_parameter
         variables = np.random.choice(np.random.randint(1, self.max_var+1), n_variable, replace=True)
-        eqtrees = [Variable(f"x_{i+1}") for i in variables] + [Number(np.random.rand()) for i in range(n_parameter)]
+        eqtrees = [nd.Variable(f"x_{i+1}") for i in variables] + [nd.Number(np.random.rand()) for i in range(n_parameter)]
 
         while n_unary_op or n_binary_op:
             if np.random.rand() < n_unary_op / (n_unary_op + n_binary_op):
@@ -47,8 +47,8 @@ class SimpleGenerator:
 
 class GPLearnGenerator():
     def __init__(self, max_var=5, const_range:None|Tuple[float, float]=None, **kwargs):
-        self.binary = kwargs.pop('binary', [Add, Sub, Mul, Div])
-        self.unary = kwargs.pop('unary', [Abs, Inv, Sqrt, Log, Exp, Sin, Arcsin, Cos, Arccos, Tan, Arctan, Pow2, Pow3])
+        self.binary = kwargs.pop('binary', [nd.Add, nd.Sub, nd.Mul, nd.Div])
+        self.unary = kwargs.pop('unary', [nd.Abs, nd.Inv, nd.Sqrt, nd.Log, nd.Exp, nd.Sin, nd.Arcsin, nd.Cos, nd.Arccos, nd.Tan, nd.Arctan, nd.Pow2, nd.Pow3])
         self.symbols = self.binary + self.unary
         self.full_prob = kwargs.pop('full_prob', 0.5)
         self.depth_range = kwargs.pop('depth_range', (2, 6))
@@ -58,7 +58,7 @@ class GPLearnGenerator():
         if any(kwargs):
             logger.warning(f"Unused arguments: {kwargs}")
 
-    def generate_eqtree(self) -> Symbol:
+    def generate_eqtree(self) -> nd.Symbol:
         full_tree = np.random.rand() < self.full_prob 
         max_depth = np.random.randint(*self.depth_range)
         op_prob = 1.0 if full_tree else 1 - self.max_var / (self.max_var + len(self.symbols))
@@ -72,43 +72,46 @@ class GPLearnGenerator():
             empty_node, depth = empty_nodes_and_depth.pop(0)
             if (depth < max_depth) and (np.random.rand() < op_prob):
                 op = random.choice(self.symbols)
-                sym = empty_node.replace(op())
+                sym = op()
+                eqtree = eqtree.replace(empty_node, sym)
                 empty_nodes_and_depth.extend([(i, depth+1) for i in sym.operands])
             else: # Variable or Number
                 sym = self.generate_leaf()
-                empty_node.replace(sym)
+                eqtree = eqtree.replace(empty_node, sym)
         return eqtree
     
-    def generate_leaf(self) -> Number|Variable:
+    def generate_leaf(self) -> nd.Number|nd.Variable:
         if self.const_range is not None:
             idx = np.random.randint(self.max_var + 1)
         else:
             idx = np.random.randint(self.max_var)
         if idx < self.max_var:
-            return Variable(f"x_{idx+1}")
+            return nd.Variable(f"x_{idx+1}")
         else:
-            return Number(np.random.uniform(*self.const_range))
+            return nd.Number(np.random.uniform(*self.const_range))
 
-class Sentinel(Symbol):
+class Sentinel(nd.Symbol):
     n_operands = 1
+    def __init__(self, nettype='scalar'):
+        super().__init__(nettype=nettype)
 
 class MetaAIGenerator:
     def __init__(self, operators_to_downsample='Div:0,Arcsin:0,Arccos:0,Tan:0.2,Arctan:0.2,Sqrt:5,Pow2:3,Inv:3', **kwargs):
-        self.binary = [Add, Sub, Mul, Div]
-        self.unary = [Abs, Inv, Sqrt, Log, Exp, Sin, Arcsin, Cos, Arccos, Tan, Arctan, Pow2, Pow3]
+        self.binary = [nd.Add, nd.Sub, nd.Mul, nd.Div]
+        self.unary = [nd.Abs, nd.Inv, nd.Sqrt, nd.Log, nd.Exp, nd.Sin, nd.Arcsin, nd.Cos, nd.Arccos, nd.Tan, nd.Arctan, nd.Pow2, nd.Pow3]
         
         prob_dict = defaultdict(lambda: 1.0)
         for item in operators_to_downsample.split(","):
             if item != "":
                 op, prob = item.split(':')
-                prob_dict[eval(op)] = float(prob)
+                prob_dict[eval(op, globals(), nd.__dict__)] = float(prob)
         self.binary_prob = [prob_dict[op] for op in self.binary]
         self.binary_prob = np.array(self.binary_prob) / sum(self.binary_prob)
         self.unary_prob = [prob_dict[op] for op in self.unary]
         self.unary_prob = np.array(self.unary_prob) / sum(self.unary_prob)
 
 
-    def generate_eqtree(self, n_operators, n_var) -> Symbol:
+    def generate_eqtree(self, n_operators, n_var) -> nd.Symbol:
         sentinel = Sentinel(); # 哨兵节点
 
         # construct unary-binary tree
@@ -120,17 +123,19 @@ class MetaAIGenerator:
             op = self.generate_ops(arity)
             next_en += next_pos + 1
             n_empty -= next_pos + 1
-            empty_nodes[next_en] = empty_nodes[next_en].replace(op())
-            empty_nodes.extend(empty_nodes[next_en].operands)
+            replace = empty_nodes[next_en]
+            other = op()
+            sentinel.replace(replace, other)
+            empty_nodes.extend(other.operands)
             n_empty += op.n_operands
             n_operators -= 1
         
         # fill variables
         n_used_var = 0
         for n in empty_nodes:
-            if isinstance(n, Empty):
+            if n in sentinel.iter_preorder():
                 sym, n_used_var = self.generate_leaf(n_var, n_used_var)
-                n.replace(sym)
+                sentinel = sentinel.replace(n, sym)
 
         return sentinel.operands[0]
 
@@ -155,14 +160,14 @@ class MetaAIGenerator:
                 self.dp_cache.append([0])
         return self.dp_cache[n_op][n_emp]
 
-    def generate_leaf(self, n_var:int, n_used_var:int) -> Tuple[Symbol, int]:
+    def generate_leaf(self, n_var:int, n_used_var:int) -> Tuple[nd.Symbol, int]:
         if n_used_var < n_var:
-            return Variable(f"x_{n_used_var+1}"), n_used_var+1
+            return nd.Variable(f"x_{n_used_var+1}"), n_used_var+1
         else:
             idx = np.random.randint(1, n_var + 1)
-            return Variable(f"x_{idx}"), n_used_var
+            return nd.Variable(f"x_{idx}"), n_used_var
 
-    def generate_ops(self, n_operands:int) -> Symbol:
+    def generate_ops(self, n_operands:int) -> nd.Symbol:
         if n_operands == 1:
             return np.random.choice(self.unary, p=self.unary_prob)
         else:
@@ -201,7 +206,7 @@ class SNIPGenerator(MetaAIGenerator):
         self.min_exp = min_exp # min: 0.001 * 10^0
         super().__init__(**kwargs)
 
-    def generate_eqtree(self, n_var=None, n_unary=None, n_binary=None) -> Symbol:
+    def generate_eqtree(self, n_var=None, n_unary=None, n_binary=None) -> nd.Symbol:
         n_var = n_var or np.random.randint(1, self.max_var)
         n_unary = n_unary or np.random.randint(self.min_unary, self.max_unary+1)
         n_binary = n_binary or np.random.randint(self.min_binary_per_var * n_var, self.max_binary_per_var * n_var + self.max_binary_ops_offset)
@@ -212,13 +217,13 @@ class SNIPGenerator(MetaAIGenerator):
         eqtree = self.add_prefactors(eqtree)
         return eqtree
 
-    def generate_float(self) -> Number:
+    def generate_float(self) -> nd.Number:
         sign = np.random.choice([-1, 1])
         mantissa = np.random.randint(1, 10 ** self.n_mantissa) / 10 ** (self.n_mantissa-1)
         exponent = np.random.randint(self.min_exp, self.max_exp)
-        return Number(sign * mantissa * 10 ** exponent)
+        return nd.Number(sign * mantissa * 10 ** exponent)
 
-    def _add_unaries(self, eqtree:Symbol) -> Symbol:
+    def _add_unaries(self, eqtree:nd.Symbol) -> nd.Symbol:
         for idx, op in enumerate(eqtree.operands):
             if len(op) < self.max_unary_depth:
                 unary = np.random.choice(self.unary, p=self.unary_prob)
@@ -227,11 +232,11 @@ class SNIPGenerator(MetaAIGenerator):
                 eqtree.operands[idx] = self._add_unaries(op)
         return eqtree
 
-    def add_unaries(self, eqtree:Symbol, n_unary:int) -> Symbol:
+    def add_unaries(self, eqtree:nd.Symbol, n_unary:int) -> nd.Symbol:
         # Add some unary operations
         eqtree = self._add_unaries(eqtree)
         # Remove some unary operations
-        postfix = [sym.__class__ if sym.n_operands > 0 else sym for sym in eqtree.postorder()]
+        postfix = [sym.__class__ if sym.n_operands > 0 else sym for sym in eqtree.iter_postorder()]
         indices = [i for i, x in enumerate(postfix) if x in self.unary]
         if len(indices) > n_unary:
             np.random.shuffle(indices)
@@ -251,25 +256,25 @@ class SNIPGenerator(MetaAIGenerator):
         assert len(eqtrees) == 1
         return eqtrees[0]
     
-    def _add_prefactors(self, eqtree:Symbol) -> Symbol:
-        if eqtree.__class__ in [Add, Sub]:
+    def _add_prefactors(self, eqtree:nd.Symbol) -> nd.Symbol:
+        if eqtree.__class__ in [nd.Add, nd.Sub]:
             x1, x2 = eqtree.operands
-            if x1.__class__ not in [Add, Sub]:
-                eqtree.operands[0] = Mul(self.generate_float(), self._add_prefactors(x1))
+            if x1.__class__ not in [nd.Add, nd.Sub]:
+                eqtree.operands[0] = nd.Mul(self.generate_float(), self._add_prefactors(x1))
             else:
                 eqtree.operands[0] = self._add_prefactors(x1)
             eqtree.operands[0].parent = eqtree
             eqtree.operands[0].child_idx = 0
-            if x2.__class__ not in [Add, Sub]:
-                eqtree.operands[1] = Mul(self.generate_float(), self._add_prefactors(x2))
+            if x2.__class__ not in [nd.Add, nd.Sub]:
+                eqtree.operands[1] = nd.Mul(self.generate_float(), self._add_prefactors(x2))
             else:
                 eqtree.operands[1] = self._add_prefactors(x2)
             eqtree.operands[1].parent = eqtree
             eqtree.operands[1].child_idx = 1
             return eqtree
-        if eqtree.__class__ in self.unary and eqtree.operands[0].__class__ not in [Add, Sub]:
+        if eqtree.__class__ in self.unary and eqtree.operands[0].__class__ not in [nd.Add, nd.Sub]:
             a, b = self.generate_float(), self.generate_float()
-            eqtree.operands[0] = Add(a, Mul(b, self._add_prefactors(eqtree.operands[0])))
+            eqtree.operands[0] = nd.Add(a, nd.Mul(b, self._add_prefactors(eqtree.operands[0])))
             eqtree.operands[0].parent = eqtree
             eqtree.operands[0].child_idx = 0
             return eqtree
@@ -279,11 +284,11 @@ class SNIPGenerator(MetaAIGenerator):
             eqtree.operands[idx].child_idx = idx
         return eqtree
 
-    def add_prefactors(self, eqtree:Symbol) -> Symbol:
+    def add_prefactors(self, eqtree:nd.Symbol) -> nd.Symbol:
         _eqtree = self._add_prefactors(eqtree)
-        if list(_eqtree.preorder()) == list(eqtree.preorder()):
-            eqtree = Mul(self.generate_float(), eqtree)
-        eqtree = Add(self.generate_float(), eqtree)
+        if list(_eqtree.iter_preorder()) == list(eqtree.iter_preorder()):
+            eqtree = nd.Mul(self.generate_float(), eqtree)
+        eqtree = nd.Add(self.generate_float(), eqtree)
         return eqtree
 
 
@@ -291,12 +296,12 @@ class SNIPGenerator2(SNIPGenerator):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
     
-    def add_prefactors(self, eqtree: Symbol) -> Symbol:
-        variables = [op for op in eqtree.preorder() if isinstance(op, Variable)]
+    def add_prefactors(self, eqtree: nd.Symbol) -> nd.Symbol:
+        variables = [op for op in eqtree.iter_preorder() if isinstance(op, nd.Variable)]
         for var in variables:
             a = self.generate_float()
             b = self.generate_float()
-            var.replace(a * var.copy() + b)
+            eqtree = eqtree.replace(var, a * var.copy() + b)
         a = self.generate_float()
         b = self.generate_float()
         return a * eqtree + b
@@ -306,7 +311,7 @@ class SNIPGenerator3(SNIPGenerator):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def generate_eqtree(self, n_var=None, n_unary=None, n_binary=None) -> Symbol:
+    def generate_eqtree(self, n_var=None, n_unary=None, n_binary=None) -> nd.Symbol:
         n_var = n_var or np.random.randint(1, self.max_var)
         n_unary = n_unary or np.random.randint(self.min_unary, self.max_unary+1)
         n_binary = n_binary or np.random.randint(self.min_binary_per_var * n_var, self.max_binary_per_var * n_var + self.max_binary_ops_offset)
@@ -317,20 +322,20 @@ class SNIPGenerator3(SNIPGenerator):
         # eqtree = self.add_prefactors(eqtree)
         return eqtree
 
-    def generate_float(self) -> Number:
+    def generate_float(self) -> nd.Number:
         raise NotImplementedError
 
 class LoadedGenerator():
-    def __init__(self, eqtrees:List[Symbol], keep_vars=True):
+    def __init__(self, eqtrees:List[nd.Symbol], keep_vars=True):
         self.eqtrees = eqtrees
         self.keep_vars = keep_vars
     
-    def generate_eqtree(self) -> Symbol:
+    def generate_eqtree(self) -> nd.Symbol:
         eqtree = random.choice(self.eqtrees).copy()
-        variables = sorted(set(x.name for x in eqtree.preorder() if isinstance(x, Variable)))
+        variables = sorted(set(x.name for x in eqtree.iter_preorder() if isinstance(x, nd.Variable)))
 
         vars, f = random.choice(list(decompose(eqtree)))
-        vars = filter(lambda x: not isinstance(x, Number), vars)
+        vars = filter(lambda x: not isinstance(x, nd.Number), vars)
         
         z_list = list(set(vars))
         if self.keep_vars: z_list = variables + list(set(z_list) - set(variables))

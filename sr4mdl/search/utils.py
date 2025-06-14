@@ -1,11 +1,11 @@
 import logging
 import numpy as np
+import nd2py as nd
 import pandas as pd
 from typing import Dict
-from ..env import Symbol, Variable
 
 
-logger = logging.getLogger('my.search.utils')
+logger = logging.getLogger(__name__)
 
 
 def preprocess(X:np.ndarray|pd.DataFrame|Dict[str,np.ndarray]):
@@ -30,9 +30,9 @@ def sample_Xy(X:Dict[str,np.ndarray], y:np.ndarray, sample_num):
     return X, y
 
 
-def rename_variable(eqtree:Symbol, variable_mapping:Dict[str,str]):
+def rename_variable(eqtree:nd.Symbol, variable_mapping:Dict[str,str]):
     eqtree = eqtree.copy()
-    for node in eqtree.postorder():
-        if isinstance(node, Variable):
+    for node in eqtree.iter_postorder():
+        if isinstance(node, nd.Variable):
             node.name = variable_mapping.get(node.name, node.name)
     return eqtree

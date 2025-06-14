@@ -1,6 +1,5 @@
 import numpy as np
-from .symbols import *
-
+import nd2py as nd
 
 class Tokenizer:
     def __init__(self, min_exponent, max_exponent, n_mantissa, max_var):
@@ -65,10 +64,10 @@ class Tokenizer:
 
     def eqtree2token(self, eqtree:np.ndarray):
         token = []
-        for node in eqtree.preorder():
-            if isinstance(node, Number):
+        for node in eqtree.iter_preorder():
+            if isinstance(node, nd.Number):
                 token.extend(self.float2token(node.value).tolist())
-            elif isinstance(node, Variable):
+            elif isinstance(node, nd.Variable):
                 token.append(node.name)
             else:
                 token.append(node.__class__.__name__.lower())

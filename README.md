@@ -21,7 +21,7 @@ It will train the model on the synthetic dataset and save the model in the `./re
 
 To test the trained MDLformer model, you can run the following command:
 ```bash
-python test.py --name demo --load_model ./results/train/demo/model.pth
+python test.py --name demo --load_model ./results/train/demo/checkpoint.pth
 ```
 
 ## Symbolic Regression
@@ -39,8 +39,7 @@ If you wanna test this model on Feynman & Strogatz dataset, you have to:
 ```bash
 cd data
 git clone https://github.com/EpistasisLab/pmlb pmlb
-cd pmlb/
-pip install .
+pip install ./pmlb
 cd ..
 ```
 2. Run the following command:
@@ -53,10 +52,21 @@ The running result will be shown in the terminal, as well as saved in the `./res
 
 To test our method on the SRBench benchmark, you have to:
 
-1. Clone the SRBench repo from [here](https://github.com/cavalab/srbench).
+1. Clone the SRBench repo from [here](https://github.com/cavalab/srbench), save it to `./benchmark/srbench/` directory:
+```bash
+git clone https://github.com/cavalab/srbench ./benchmark/srbench/
+```
 2. Create `./srbench/experiment/methods/sr4mdl` directory, and create an empty `__init__.py` file in it.
+```bash
+mkdir -p ./benchmark/srbench/experiment/methods/sr4mdl
+touch ./benchmark/srbench/experiment/methods/sr4mdl/__init__.py
+```
 3. Move `regressor.py` to `./srbench/experiment/methods/sr4mdl/`, remember to replace `/path/to/weights/checkpoint.pth` with the path to the trained model.
-4. Run the following script starting from the `./srbench/experiment/` directory:
+```bash
+cp ./regressor.py ./benchmark/srbench/experiment/methods/sr4mdl/regressor.py
+# Replace the /path/to/weights/checkpoint.pth to, for example, ./weights/checkpoint.pth
+```
+5. Run the following script starting from the `./srbench/experiment/` directory:
 ```bash
 #!/bin/bash
 method=sr4mdl
@@ -71,4 +81,25 @@ for exp in strogatz_vdp2 feynman_I_6_2a strogatz_bacres2 strogatz_bacres1 feynma
 done
 done
 done
+```
+Or
+```bash
+python ./benchmark/srbench/experiment/analyze.py \
+    ./data/pmlb/datasets/strogatz_* \  # Strogatz datasets
+    -time_limit 00:15 \  # 15 monutes
+    -ml sr4mdl \ # Test sr4mdl method
+    -n_jobs 2 \  # 2 cores
+    -results ./results/srbench/ \  # Save results to this directory
+    -sym_data \
+    --local \
+    -script ./benchmark/srbench/experiment/evaluate_model 
+
+python ./benchmark/srbench/experiment/analyze.py \
+    ./data/pmlb/datasets/feynman_* \
+    -ml sr4mdl \
+    --local \
+    -n_jobs 2 \
+    -results ./results/srbench/ \
+    -script ./benchmark/srbench/experiment/evaluate_model 
+    -sym_data
 ```

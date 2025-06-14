@@ -1,7 +1,7 @@
 import random
 import numpy as np
+import nd2py as nd
 from scipy.stats import special_ortho_group
-from ..env import Variable
 
 
 class GMMGenerator:
@@ -28,13 +28,13 @@ class GMMGenerator:
         return X
 
     def generate_data(self, num, eqtree, return_X_dict=False):
-        variables = sorted(set(x.name for x in eqtree.preorder() if isinstance(x, Variable)))
+        variables = sorted(set(x.name for x in eqtree.iter_preorder() if isinstance(x, nd.Variable)))
         dim = len(variables)
         X_list, Y_list = [], [] # (num_i, dim), (num_i,)
         for _ in range(5): # no more than 10 trials
             X = self.GMM(num, dim)
             if self.normalize_X: X = (X - np.mean(X, axis=0, keepdims=True)) / (np.std(X, axis=0, keepdims=True) + 1e-6)
-            Y = eqtree.eval(**{var: X[:, idx] for idx, var in enumerate(variables)})
+            Y = eqtree.eval({var: X[:, idx] for idx, var in enumerate(variables)})
             invalid_idx = np.isnan(Y) | np.isinf(Y) | (np.abs(Y) > self.max_value)
             X_list.append(X[~invalid_idx])
             Y_list.append(Y[~invalid_idx])
@@ -63,7 +63,7 @@ class SubeqGenerator(GMMGenerator):
         self.normalize_X = normalize_X
     
     def generate_data(self, num, eqtree):
-        variables = sorted(set(x.name for x in eqtree.preorder() if isinstance(x, Variable)))
+        variables = sorted(set(x.name for x in eqtree.iter_preorder() if isinstance(x, nd.Variable)))
         D = len(variables)
         K = random.randint(1, self.max_var)
         f = [self.eq_generator.generate_eqtree(n_var=random.randint(1, K)) for _ in range(D)]
@@ -72,9 +72,9 @@ class SubeqGenerator(GMMGenerator):
             Z = self.GMM(num, K)
             Z = (Z - np.mean(Z, axis=0, keepdims=True)) / (np.std(Z, axis=0, keepdims=True) + 1e-6)
             Z = {f'x_{k+1}':Z[:, k] for k in range(K)}
-            X = np.stack([f_d.eval(**Z) for f_d in f], axis=-1)
+            X = np.stack([f_d.eval(Z) for f_d in f], axis=-1)
             if self.normalize_X: X = (X - np.mean(X, axis=0, keepdims=True)) / (np.std(X, axis=0, keepdims=True) + 1e-6)
-            Y = eqtree.eval(**{var: X[:, idx] for idx, var in enumerate(variables)})
+            Y = eqtree.eval({var: X[:, idx] for idx, var in enumerate(variables)})
             invalid_idx = np.isnan(Y) | np.isinf(Y) | (np.abs(Y) > self.max_value) | np.isnan(X).any(axis=-1) | np.isinf(X).any(axis=-1) | (np.abs(X) > self.max_value).any(axis=-1)
             X_list.append(X[~invalid_idx, :])
             Y_list.append(Y[~invalid_idx])

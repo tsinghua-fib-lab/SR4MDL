@@ -1,11 +1,11 @@
 import torch
 import numpy as np
-from sr4mdl.utils import init_logger, AutoGPU, AttrDict
+from nd2py.utils import init_logger, AutoGPU, AttrDict
 from sr4mdl.env import Tokenizer
 from sr4mdl.search import MCTS4MDL
 from sr4mdl.model import MDLformer
 
-init_logger('sr4mdl')
+init_logger('sr4mdl', exp_name='regressor', info_level='note')
 
 args = AttrDict(
     ## Fixed parameters
@@ -42,7 +42,7 @@ eval_kwargs = {
 est = MCTS4MDL(
     tokenizer=tokenizer, 
     model=mdlformer,
-    n_iter=1000,
+    n_iter=1_000_000,
     binary=['Mul', 'Div', 'Add', 'Sub'],
     unary=['Sqrt', 'Cos', 'Sin', 'Pow2', 'Pow3', 'Exp', 'Log', 'Inv', 'Neg'],
     # unary=['Sqrt', 'Cos', 'Sin', 'Pow2', 'Pow3', 'Exp', 'Log', 'Inv', 'Neg', 'Arcsin', 'Arccos', 'Cot', 'Log', 'Tanh'],

@@ -3,19 +3,21 @@ import json
 import yaml
 import time
 import torch
+import signal
 import logging
 import traceback
 import numpy as np
+import nd2py as nd2
 import pandas as pd
+from socket import gethostname
 from argparse import ArgumentParser
 from setproctitle import setproctitle
-from sr4mdl.env import sympy2eqtree, str2sympy, Tokenizer, Add, Sub, Mul, Div, Pow, Sqrt, Cos, Sin, Pow2, Pow3, Exp, Inv, Neg, Arcsin, Arccos, Cot, Log, Tanh, Number, Variable
+from nd2py.utils import seed_all, init_logger, AutoGPU, AttrDict
+from sr4mdl.utils import parse_parser, RMSE_score, R2_score
 from sr4mdl.search import MCTS4MDL
 from sr4mdl.model import MDLformer
-from sr4mdl.utils import set_seed, init_logger, set_signal, AutoGPU, AttrDict, parse_parser, RMSE_score, R2_score
+from sr4mdl.env import sympy2eqtree, str2sympy, Tokenizer
 
-
-logger = logging.getLogger('my.main')
 
 parser = ArgumentParser()
 parser.add_argument('-f', '--function', type=str, default='f=x1+x2*sin(x3)', help='`f=...\' or `Feynman_xxx\'')
@@ -39,11 +41,13 @@ parser.add_argument('--cheat', action='store_true')
 
 args = parse_parser(parser, save_dir='./results/search/')
 
-init_logger(args.name, os.path.join(args.save_dir, 'info.log'), quiet=args.quiet)
-logger = logging.getLogger('my.search')
+init_logger('sr4mdl', args.name, os.path.join(args.save_dir, 'info.log'))
+logger = logging.getLogger('sr4mdl.search')
 logger.info(args)
-set_signal()
-set_seed(args.seed)
+seed_all(args.seed)
+def handler(signum, frame): raise KeyboardInterrupt
+signal.signal(signal.SIGINT, handler)
+signal.signal(signal.SIGTERM, handler)
 setproctitle(f'{args.name}@YuZihan')
 
 if args.device == 'auto':
@@ -54,12 +58,12 @@ args.function = args.function.replace(' ', '')
 def search():
     if '=' in args.function:
         f = sympy2eqtree(str2sympy(args.function.split('=', 1)[1]))
-        binary = list(set(op.__class__ for op in f.preorder() if op.n_operands == 2))
-        unary = list(set(op.__class__ for op in f.preorder() if op.n_operands == 1))
-        leaf = list(set(op for op in f.preorder() if isinstance(op, Number)))
-        variables = list(set(op.name for op in f.preorder() if isinstance(op, Variable)))
+        binary = list(set(op.__class__ for op in f.iter_preorder() if op.n_operands == 2))
+        unary = list(set(op.__class__ for op in f.iter_preorder() if op.n_operands == 1))
+        leaf = list(set(op for op in f.iter_preorder() if isinstance(op, nd2.Number)))
+        variables = list(set(op.name for op in f.iter_preorder() if isinstance(op, nd2.Variable)))
         X = {var: np.random.uniform(-5, 5, (args.sample_num,)) for var in variables}
-        y = f.eval(**X)
+        y = f.eval(X)
         log = {
             'target function': args.function,
             'binary operators': [op.__name__ for op in binary],
@@ -79,9 +83,9 @@ def search():
         logger.info(f'Done, df.shape = {df.shape}')
         X = {col:df[col].values for col in df.columns}
         y = X.pop('target')
-        binary = [Mul, Div, Add, Sub]
-        unary = [Sqrt, Cos, Sin, Pow2, Pow3, Exp, Inv, Neg, Arcsin, Arccos, Cot, Log, Tanh]
-        leaf = [Number(1), Number(2), Number(np.pi)]
+        binary = [nd2.Mul, nd2.Div, nd2.Add, nd2.Sub]
+        unary = [nd2.Sqrt, nd2.Cos, nd2.Sin, nd2.Pow2, nd2.Pow3, nd2.Exp, nd2.Inv, nd2.Neg, nd2.Arcsin, nd2.Arccos, nd2.Cot, nd2.Log, nd2.Tanh]
+        leaf = [nd2.Number(1), nd2.Number(2), nd2.Number(np.pi)]
         log = {
             'target function': args.function,
             'binary operators': [op.__name__ for op in binary],
@@ -96,9 +100,9 @@ def search():
             eq = sympy2eqtree(str2sympy(eq))
             log['target function'] = log['target function'] + ' ({} = {})'.format(target, eq.to_str(number_format=".2f"))
             if args.cheat:
-                binary = list(set(op.__class__ for op in eq.preorder() if op.n_operands == 2))
-                unary = list(set(op.__class__ for op in eq.preorder() if op.n_operands == 1))
-                leaf = list(set(op for op in eq.preorder() if isinstance(op, Number)))
+                binary = list(set(op.__class__ for op in eq.iter_preorder() if op.n_operands == 2))
+                unary = list(set(op.__class__ for op in eq.iter_preorder() if op.n_operands == 1))
+                leaf = list(set(op for op in eq.iter_preorder() if isinstance(op, nd2.Number)))
                 log['binary operators'] = [op.__name__ for op in binary]
                 log['unary operators'] = [op.__name__ for op in unary]
                 log['leaf'] = [op.to_str(number_format=".2f") for op in leaf]
@@ -142,7 +146,7 @@ def search():
 
     result = {
         'date': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'host': os.uname().nodename,
+        'host': gethostname(),
         'name': args.name,
         'load_model': args.load_model,
         'success': str(rmse < 1e-6),

@@ -7,18 +7,19 @@ import sklearn
 import traceback
 import numpy as np
 import sympy as sp
+import nd2py as nd
 import pandas as pd
 from tqdm import tqdm
 from typing import List, Generator, Tuple, Dict
 from ..env import simplify
-from ..env.symbols import *
+# from ..env.symbols import *
 from ..env.tokenizer import Tokenizer
 from ..model.mdlformer import MDLformer
 from .utils import preprocess, sample_Xy
-from ..utils import set_seed, Timer, NamedTimer, R2_score, RMSE_score
+from nd2py.utils import seed_all, Timer, NamedTimer, R2_score, RMSE_score
 
 class Node:
-    def __init__(self, eqtrees:List[Symbol]):
+    def __init__(self, eqtrees:List[nd.Symbol]):
         # Formula part
         self.eqtrees = eqtrees
         self.phi = None
@@ -88,9 +89,9 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
     def __init__(self, 
         tokenizer:Tokenizer, 
         model:MDLformer, 
-        binary:List[str|Symbol]=[Add, Sub, Mul, Div, Max, Min],
-        unary:List[str|Symbol]=[Sqrt, Log, Abs, Neg, Inv, Sin, Cos, Tan],
-        leaf:List[float|Number]=[Number(1), Number(0.5)],
+        binary:List[str|nd.Symbol]=[nd.Add, nd.Sub, nd.Mul, nd.Div, nd.Max, nd.Min],
+        unary:List[str|nd.Symbol]=[nd.Sqrt, nd.Log, nd.Abs, nd.Neg, nd.Inv, nd.Sin, nd.Cos, nd.Tan],
+        leaf:List[float|nd.Number]=[nd.Number(1), nd.Number(0.5)],
         const_range=None,
         child_num=50,
         n_playout=100,
@@ -115,9 +116,9 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
         self.max_var = self.model.args.max_var
 
         self.eqtree = None
-        self.binary = [eval(x) if isinstance(x, str) else x for x in binary]
-        self.unary = [eval(x) if isinstance(x, str) else x for x in unary]
-        self.leaf = [Number(x) if isinstance(x, float) else x for x in leaf]
+        self.binary = [eval(x, globals(), nd.__dict__) if isinstance(x, str) else x for x in binary]
+        self.unary = [eval(x, globals(), nd.__dict__) if isinstance(x, str) else x for x in unary]
+        self.leaf = [nd.Number(x) if isinstance(x, float) else x for x in leaf]
         self.variables = []
 
         self.const_range = const_range
@@ -132,7 +133,7 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
         self.log_per_iter = log_per_iter
         self.log_per_sec = log_per_sec
         self.records = []
-        self.logger = logging.getLogger('my.SampleSideMCTS')
+        self.logger = logging.getLogger(__name__)
         self.step_timer = Timer()
         self.view_timer = Timer()
         self.named_timer = NamedTimer()
@@ -159,19 +160,19 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
             X: (n_samples, n_dims)
             y: (n_samples,)
         """
-        set_seed(self.random_state)
+        seed_all(self.random_state)
         n_iter = n_iter or self.n_iter
 
         # Preprocess
         X = preprocess(X)
         X, y = sample_Xy(X, y, self.sample_num)
-        self.variables = [Variable(var) for var in X]
+        self.variables = [nd.Variable(var) for var in X]
         self.keep_vars = len(X) if self.keep_vars and len(X) <= self.max_var / 2 else 0
 
         # Root Node
         variables = list(X.keys())
         if len(variables) > self.max_var: variables = variables[:self.max_var]
-        self.MC_tree = Node([Variable(var) for var in variables])
+        self.MC_tree = Node([nd.Variable(var) for var in variables])
         self.estimate_MDL(self.MC_tree, X, y)
 
         # Search
@@ -201,8 +202,8 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
                 stop = early_stop(self.best.r2, self.best.complexity, self.best.phi)
 
             if (not iter % self.log_per_iter) or (self.step_timer.time > self.log_per_sec) or (iter == n_iter) or (stop):
-                record['speed'] = (self.step_timer.pop(), self.view_timer.pop())
-                record['detailed_time'] = self.named_timer.pop()
+                record['speed'] = (str(self.step_timer), str(self.view_timer))
+                record['detailed_time'] = str(self.named_timer)
                 
                 log['Reward'] = f'{self.best.reward:.5f}'
                 log['Complexity'] = self.best.complexity
@@ -210,9 +211,8 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
                 log['MDL'] = f'{self.best.MDL:.5f}'
                 log['Best'] = str(self.best)
                 log['Best equation'] = str(self.best.phi)
-                log['Speed'] = f'{record['speed'][0]:.2f} step/s ({record['speed'][1]:.2f} node/s)'
-                tot = sum(record['detailed_time'].values())
-                log['Time'] = f'{tot*1000:.0f}ms (' + ','.join(f'{n}={t/tot:.0%}' for n, t in record['detailed_time'].items()) + ')'
+                log['Speed'] = f'{record['speed'][0]} ({record['speed'][1]})'
+                log['Time'] = record['detailed_time']
                 log['Current'] = str(expand)
                 self.logger.info(' | '.join(f'\033[4m{k}\033[0m: {v}' for k, v in log.items()))
 
@@ -222,7 +222,7 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
                     f.write(json.dumps(record) + '\n')
 
             if stop:
-                self.logger.info(f'Early stopping at iter {iter} with R2 {self.best.r2} ({self.best.eqtrees})')
+                self.logger.note(f'Early stopping at iter {iter} with R2 {self.best.r2} ({self.best.eqtrees})')
                 break
         # self.logger.info(expand.to_route(3, self.c))
 
@@ -235,11 +235,11 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
         """
         if self.eqtree is None: raise ValueError('Model not fitted yet')
         X = preprocess(X)
-        pred = self.eqtree.eval(**X)
+        pred = self.eqtree.eval(X)
         pred[~np.isfinite(pred)] = 0
         return pred
 
-    def action(self, state:Node, action:Tuple[Symbol,int]) -> Node:
+    def action(self, state:Node, action:Tuple[nd.Symbol,int]) -> Node:
         """
         用 action[0] 取代 state.eqtrees[action[1]]
         """
@@ -247,31 +247,31 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
         eqtree, idx = action
         if idx == len(state.eqtrees): 
             state.eqtrees.append(eqtree)
-        elif isinstance(eqtree, Empty):
+        elif isinstance(eqtree, nd.Empty):
             state.eqtrees.pop(idx)
         else:
             state.eqtrees[idx] = eqtree
         return state
 
-    def check_valid_action(self, state:Node, action:Tuple[Symbol,int]) -> bool:
+    def check_valid_action(self, state:Node, action:Tuple[nd.Symbol,int]) -> bool:
         eqtree, idx = action
         if idx > min(len(state.eqtrees) + 1, self.max_var): return False
-        if idx == len(state.eqtrees) and isinstance(eqtree, Empty): return False
-        if len(state.eqtrees) == 1 and isinstance(eqtree, Empty): return False
+        if idx == len(state.eqtrees) and isinstance(eqtree, nd.Empty): return False
+        if len(state.eqtrees) == 1 and isinstance(eqtree, nd.Empty): return False
         if sum(len(eqtree) for i, eqtree in enumerate(state.eqtrees) if i != idx) + len(eqtree) > self.max_len: return False
         if idx < self.keep_vars: return False
         return True
 
-    def iter_valid_action(self, state:Node, shuffle=False) -> Generator[Tuple[Symbol,int],None,None]:
+    def iter_valid_action(self, state:Node, shuffle=False) -> Generator[Tuple[nd.Symbol,int],None,None]:
         leafs = [*state.eqtrees, *self.variables, *self.leaf]
 
         eqtree_loader = []
         for sym in self.binary:
-            if sym in [Add, Mul, Max, Min]: # Abelian group
+            if sym in [nd.Add, nd.Mul, nd.Max, nd.Min]: # Abelian group
                 for i in range(len(leafs)):
                     for j in range(i, len(leafs)):
                         eqtree_loader.append(sym(leafs[i], leafs[j]))
-            elif sym in [Sub, Div]: # Non-abelian group
+            elif sym in [nd.Sub, nd.Div]: # Non-abelian group
                 for i in range(len(leafs)):
                     for j in range(len(leafs)):
                         if i != j:
@@ -285,7 +285,7 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
                 eqtree_loader.append(sym(leafs[i]))
         for sym in self.variables:
             eqtree_loader.append(sym)
-        eqtree_loader.append(Empty())
+        eqtree_loader.append(nd.Empty())
 
         idx_loader = list(range(self.keep_vars, min(len(state.eqtrees) + 1, self.max_var)))
 
@@ -297,10 +297,10 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
             if self.check_valid_action(state, (eqtree, idx)):
                 yield eqtree, idx
     
-    def pick_valid_action(self, state:Node) -> Tuple[Symbol,int]:
+    def pick_valid_action(self, state:Node) -> Tuple[nd.Symbol,int]:
         leafs = [*state.eqtrees, *self.variables, *self.leaf]
         for _ in range(1000):
-            op = random.choice(self.binary + self.unary + self.variables + [Empty()])
+            op = random.choice(self.binary + self.unary + self.variables + [nd.Empty()])
             idx = random.choice(range(self.keep_vars, min(len(state.eqtrees) + 1, self.max_var)))
             if isinstance(op, type): op = op(*random.choices(leafs, k=op.n_operands))
             if self.check_valid_action(state, (op, idx)): break
@@ -313,7 +313,7 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
         batch = np.zeros((len(nodes), y.shape[0], self.max_var+1)) # (B, N_i, D_max+1,)
         for idx, node in enumerate(nodes):
             for i, eqtree in enumerate(node.eqtrees): 
-                batch[idx, :, i] = eqtree.eval(**X)
+                batch[idx, :, i] = eqtree.eval(X)
         if self.normalize_y: y = (y - y.mean()) / (y.std()+1e-6)
         batch[:, :, -1] = y[np.newaxis, :]
         if self.remove_abnormal: batch[((batch > -5) & (batch < 5)).all(axis=-1), :] = np.nan
@@ -377,7 +377,7 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
         Z[:, 0] = 1.0
         for idx, eqtree in enumerate(node.eqtrees, 1):
             try:
-                Z[:, idx] = eqtree.eval(**X)
+                Z[:, idx] = eqtree.eval(X)
             except:
                 Z[:, idx] = np.nan
         Z[~np.isfinite(Z)] = 0
@@ -388,7 +388,7 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
             A, _, _, _ = np.linalg.lstsq(Z[train_idx, :], y[train_idx], rcond=None)
             A = np.round(A, 6)
             node.r2 = R2_score(y[eval_idx], Z[eval_idx, :] @ A)
-            node.phi = Number(A[0]) if A[0] != 0 else None
+            node.phi = nd.Number(A[0]) if A[0] != 0 else None
             for a, op in zip(A[1:], node.eqtrees):
                 if a == 0: pass
                 elif a == 1: 
@@ -398,13 +398,13 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
                     if node.phi is None: node.phi = -op
                     else: node.phi -= op
                 else: 
-                    if node.phi is None: node.phi = Number(a) * op
-                    else: node.phi += Number(a) * op
-            if node.phi is None: node.phi = Number(0.0)
+                    if node.phi is None: node.phi = nd.Number(a) * op
+                    else: node.phi += nd.Number(a) * op
+            if node.phi is None: node.phi = nd.Number(0.0)
             node.complexity = len(node.phi)
             node.reward = self.eta ** node.complexity / (2 - node.r2)
         except Exception as e:
-            logger.warning(traceback.format_exc())
+            self.logger.warning(traceback.format_exc())
             node.r2 = -np.inf
             node.complexity = np.inf
             node.reward = 0.0
@@ -428,45 +428,45 @@ class MCTS4MDL(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
             if reward > node.reward:
                 node.r2 = r2
                 node.reward = reward
-                node.phi = Number(A[0]) if A[0] != 1 else None
+                node.phi = nd.Number(A[0]) if A[0] != 1 else None
                 for idx, (a, op) in enumerate(zip(A[1:], node.eqtrees), 1):
-                    if (Z[idx]<0).any(): op = Abs(op)
+                    if (Z[idx]<0).any(): op = nd.Abs(op)
                     if a == 0: pass
                     elif a == 1: 
                         if node.phi is None: node.phi = op
                         else: node.phi *= op
                     elif a == -1: 
-                        if node.phi is None: node.phi = Inv(op)
+                        if node.phi is None: node.phi = nd.Inv(op)
                         else: node.phi /= op
                     elif a == 2:
-                        if node.phi is None: node.phi = Pow2(op)
-                        else: node.phi *= Pow2(op)
+                        if node.phi is None: node.phi = nd.Pow2(op)
+                        else: node.phi *= nd.Pow2(op)
                     elif a == -2:
-                        if node.phi is None: node.phi = Inv(Pow2(op))
-                        else: node.phi /= Pow2(op)
+                        if node.phi is None: node.phi = nd.Inv(nd.Pow2(op))
+                        else: node.phi /= nd.Pow2(op)
                     elif a == 3:
-                        if node.phi is None: node.phi = Pow3(op)
-                        else: node.phi *= Pow3(op)
+                        if node.phi is None: node.phi = nd.Pow3(op)
+                        else: node.phi *= nd.Pow3(op)
                     elif a == -3:
-                        if node.phi is None: node.phi = Inv(Pow3(op))
-                        else: node.phi /= Pow3(op)
+                        if node.phi is None: node.phi = nd.Inv(nd.Pow3(op))
+                        else: node.phi /= nd.Pow3(op)
                     elif a == 0.5:
-                        if node.phi is None: node.phi = Sqrt(op)
-                        else: node.phi *= Sqrt(op)
+                        if node.phi is None: node.phi = nd.Sqrt(op)
+                        else: node.phi *= nd.Sqrt(op)
                     elif a == -0.5:
-                        if node.phi is None: node.phi = Inv(Sqrt(op))
-                        else: node.phi /= Sqrt(op)
+                        if node.phi is None: node.phi = nd.Inv(nd.Sqrt(op))
+                        else: node.phi /= nd.Sqrt(op)
                     elif a > 0:
-                        if node.phi is None: node.phi = op ** Number(a)
-                        else: node.phi *= op ** Number(a)
+                        if node.phi is None: node.phi = op ** nd.Number(a)
+                        else: node.phi *= op ** nd.Number(a)
                     elif a < 0:
-                        if node.phi is None: node.phi = Inv(op ** Number(-a))
-                        else: node.phi /= op ** Number(-a)
+                        if node.phi is None: node.phi = nd.Inv(op ** nd.Number(-a))
+                        else: node.phi /= op ** nd.Number(-a)
                     else: raise ValueError(f'Unknown a: {a}')
-                if node.phi is None: node.phi = Number(1.0)
+                if node.phi is None: node.phi = nd.Number(1.0)
                 node.complexity = len(node.phi)
         except Exception as e:
-            logger.warning(traceback.format_exc())
+            self.logger.warning(traceback.format_exc())
             # logger.warning(str(e))
             node.r2 = -np.inf
             node.complexity = np.inf

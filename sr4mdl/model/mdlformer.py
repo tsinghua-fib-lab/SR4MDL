@@ -13,8 +13,9 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.amp import autocast, GradScaler
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.ticker import PercentFormatter
+from nd2py.utils import AttrDict, Timer, NamedTimer, get_fig
+from sr4mdl.utils import R2_score, RMSE_score, AUC_score
 from .utils import MLP, noam_lambda, AttentionPooling, CLIPLoss
-from ..utils import AttrDict, R2_score, RMSE_score, AUC_score, Timer, NamedTimer
 
 import warnings
 warnings.filterwarnings("ignore", message="The PyTorch API of nested tensors is in prototype stage and will change in the near future.")
@@ -214,7 +215,7 @@ class Trainer:
 
         self.n_step = 0
         self.records = []
-        self.logger = logging.getLogger('my.trainer')
+        self.logger = logging.getLogger(__name__)
         self.timer = Timer()  # 测量速度
         self.named_timer = NamedTimer()  # 测量时间分配 (load data, forward, backward, evaluate, save & plot)
 
@@ -314,8 +315,8 @@ class Trainer:
             record['loss'] = loss.item()
             record['clip_loss'] = clip_loss.item()
             record['pred_loss'] = pred_loss.item()
-            record['speed'] = self.timer.pop()
-            record['time'] = self.named_timer.pop()
+            record['speed'] = self.timer.speed()
+            record['time'] = self.named_timer.time
 
             log['RMSE'] = f'{record["RMSE"]:.2f}'
             log['AUC'] = f'{record["AUC"]:.2%}'
@@ -323,9 +324,8 @@ class Trainer:
             log['Loss'] = f'{record["loss"]:.4f}'
             log['ClipLoss'] = f'{record["clip_loss"]:.4f}'
             log['PredLoss'] = f'{record["pred_loss"]:.4f}'
-            log['Speed'] = f'{record["speed"]:.1f}eq/s'
-            tot = sum(record['time'].values())
-            log['Time'] = f'{tot*1000:.0f}ms (' + ','.join(f'{n}={t/tot:.0%}' for n, t in record['time'].items()) + ')'
+            log['Speed'] = str(self.timer)
+            log['Time'] = str(self.named_timer)
         self.named_timer.add('evaluate')
         self.records.append(record)
         with open(os.path.join(self.args.save_dir, 'records.json'), 'a') as f:
@@ -340,7 +340,6 @@ class Trainer:
         return log
 
     def plot(self, path, abs_path=False):
-        from ..utils.plot import get_fig
         fi, fig, gs = get_fig(4, 3, FW=14, A_ratio=1.0, gridspec=True)
         axes = {
             'Loss': fig.add_subplot(gs[0, 0]),
@@ -473,7 +472,7 @@ class Trainer:
         # 避免内存泄漏
         plt.close(fig)
         for ax in axes.values(): ax.clear()
-        fig.clear()
+        # fig.clear()
         del fig, axes
 
     def save(self, path, abs_path=False, model_only=False):

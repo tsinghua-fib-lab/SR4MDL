@@ -1,20 +1,24 @@
 import os
 import torch
+import signal
 import logging
 import numpy as np
-from sr4mdl.utils import set_seed, set_proctitle, set_signal, init_logger, AutoGPU, get_args, get_fig
-from sr4mdl.utils.metrics import RMSE_score, R2_score, kendall_rank_score, spearman_rank_score, pearson_score, AUC_score, NDCG_score
+from setproctitle import setproctitle
+from nd2py.utils import seed_all, init_logger, AutoGPU, get_fig
+from sr4mdl.utils import get_args, RMSE_score, R2_score, kendall_rank_score, spearman_rank_score, pearson_score, AUC_score, NDCG_score
 
 # Get args
 args = get_args(save_dir='./results/test')
 
 # Init
-init_logger(exp_name=args.name, log_file=os.path.join(args.save_dir, 'info.log'), quiet=args.quiet)
-logger = logging.getLogger('my.main')
+init_logger('sr4mdl', exp_name=args.name, log_file=os.path.join(args.save_dir, 'info.log'))
+logger = logging.getLogger('sr4mdl.test')
 logger.info(args)
-set_signal()
-set_seed(args.seed)
-set_proctitle(f'{args.name}@YuZihan')
+def handler(signum, frame): raise KeyboardInterrupt
+signal.signal(signal.SIGINT, handler)
+signal.signal(signal.SIGTERM, handler)
+seed_all(args.seed)
+setproctitle(f'{args.name}@YuZihan')
 
 # Refine Args
 if args.num_workers: args.save_equations = int(np.ceil(args.save_equations / args.num_workers))

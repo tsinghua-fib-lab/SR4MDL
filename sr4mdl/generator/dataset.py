@@ -5,19 +5,19 @@ import logging
 import itertools
 import numpy as np
 import sympy as sp
-import torch.nn as nn
+import nd2py as nd
 import torch.utils.data as D
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from sklearn.decomposition import PCA
+from itertools import islice
 from typing import List, Tuple
+from nd2py.utils import AttrDict, get_fig
 from torch.nn.utils.rnn import pad_sequence
 from .data_generator import GMMGenerator, SubeqGenerator
 from .eqtree_generator import SNIPGenerator, SNIPGenerator3, SimpleGenerator
-from ..env import Tokenizer, sympy2eqtree, str2sympy, decompose, Variable, Number, Symbol, Empty
-from ..utils import AttrDict, get_fig
+from ..env import Tokenizer, sympy2eqtree, str2sympy, decompose
 
-logger = logging.getLogger('my.dataset')
+logger = logging.getLogger(__name__)
 
 
 class Num2EqDataset(D.Dataset):
@@ -59,7 +59,7 @@ class Num2EqDataset(D.Dataset):
                     continue
                 if len(_eqtree) <= len(eqtree): eqtree = _eqtree
 
-            if not any(isinstance(x, Variable) for x in eqtree.preorder()): continue
+            if not any(isinstance(x, nd.Variable) for x in eqtree.iter_preorder()): continue
             if len(eqtree) > self.args.max_len: continue
 
             N = self.args.uniform_sample_number or np.random.randint(100, 500)
@@ -151,18 +151,18 @@ class Num2EqDatasetHard(Num2EqDataset):
                 elif X.shape[1] == 2: axes[1].scatter(*X.T, c=Y, cmap=plt.cm.bwr, s=1)
                 elif X.shape[1] == 1: axes[1].scatter(X, Y, c=Y, cmap=plt.cm.bwr, s=1)
 
-            variables = sorted(set([x.name for x in eqtree.preorder() if isinstance(x, Variable)]))
+            variables = sorted(set([x.name for x in eqtree.iter_preorder() if isinstance(x, nd.Variable)]))
             if self.args.normalize_X: 
                 X_mean = np.mean(X, axis=0)
                 X_std = np.std(X, axis=0).clip(1e-6)
                 X = (X - X_mean) / X_std
                 # tmp = {var:[] for var in variables}
-                # for x in eqtree.preorder():
-                #     if isinstance(x, Variable):
+                # for x in eqtree.iter_preorder():
+                #     if isinstance(x, nd.Variable):
                 #         tmp[x.name].append(x)
                 # for idx, var in enumerate(variables):
                 #     for x in tmp[var]:
-                #         x.replace(Variable(var) * X_std[idx] + X_mean[idx])
+                #         x.replace(nd.Variable(var) * X_std[idx] + X_mean[idx])
             if self.args.normalize_y: 
                 Y_mean = np.mean(Y)
                 Y_std = np.std(Y).clip(1e-6)
@@ -184,7 +184,7 @@ class Num2EqDatasetHard(Num2EqDataset):
                 except:
                     continue
 
-            if not any(isinstance(x, Variable) for x in eqtree.preorder()): continue
+            if not any(isinstance(x, nd.Variable) for x in eqtree.iter_preorder()): continue
             if len(eqtree) > self.args.max_len: continue
 
             if self.args.get('plot_demo', False):
@@ -193,9 +193,9 @@ class Num2EqDatasetHard(Num2EqDataset):
                 elif X.shape[1] == 2: axes[2].scatter(*X.T, c=Y, cmap=plt.cm.bwr, norm=norm, s=1)
                 elif X.shape[1] == 1: axes[2].scatter(X, Y, c=Y, cmap=plt.cm.bwr, norm=norm, s=1)
 
-                variables = sorted(set(x.name for x in eqtree.preorder() if isinstance(x, Variable)))
+                variables = sorted(set(x.name for x in eqtree.iter_preorder() if isinstance(x, nd.Variable)))
                 X_ = np.random.normal(0, 1, (10000, X.shape[1]))
-                Y_ = eqtree.eval(**{var: X_[:, idx] for idx, var in enumerate(variables)})
+                Y_ = eqtree.eval({var: X_[:, idx] for idx, var in enumerate(variables)})
                 if X_.shape[1] > 2:    axes[3].scatter(*X_[:, (0,1)].T, c=Y_, cmap=plt.cm.bwr, norm=norm, s=1)
                 elif X_.shape[1] == 2: axes[3].scatter(*X_.T, c=Y_, cmap=plt.cm.bwr, norm=norm, s=1)
                 elif X_.shape[1] == 1: axes[3].scatter(X_, Y_, c=Y_, cmap=plt.cm.bwr, norm=norm, s=1)
@@ -257,7 +257,7 @@ class Num2EqDatasetPure(Num2EqDataset):
                 except:
                     continue
             length = len(eqtree)
-            if not any(isinstance(x, Variable) for x in eqtree.preorder()): continue
+            if not any(isinstance(x, nd.Variable) for x in eqtree.iter_preorder()): continue
 
             N = self.args.uniform_sample_number or np.random.randint(100, 500)
             X, Y = self.data_generator.generate_data(N, eqtree)
@@ -265,7 +265,7 @@ class Num2EqDatasetPure(Num2EqDataset):
             if self.args.normalize_X: X = (X - np.mean(X, axis=0)) / (np.std(X, axis=0) + 1e-6)
             if self.args.normalize_y: Y = (Y - np.mean(Y)) / (np.std(Y) + 1e-6)
 
-            if not any(isinstance(x, Variable) for x in eqtree.preorder()): continue
+            if not any(isinstance(x, nd.Variable) for x in eqtree.iter_preorder()): continue
             if len(eqtree) > self.args.max_len: continue
 
             data = np.pad(X, ((0, 0), (0, self.args.max_var - X.shape[1])), constant_values=0)
@@ -298,7 +298,7 @@ class Num2EqDatasetKeep(Num2EqDataset):
 
     def __getitem__(self, idx):
         while True:
-            eqtree:Symbol = self.eqtree_generator.generate_eqtree()
+            eqtree:nd.Symbol = self.eqtree_generator.generate_eqtree()
             if self.args.simplify:
                 sympy_expr = str2sympy(str(eqtree))
                 sympy_expr = sympy_expr.subs({sym: sp.Symbol(sym.name, real=True) for sym in sympy_expr.free_symbols})
@@ -308,29 +308,29 @@ class Num2EqDatasetKeep(Num2EqDataset):
                 except:
                     continue
                 if len(_eqtree) <= len(eqtree): eqtree = _eqtree
-            if not any(isinstance(x, Variable) for x in eqtree.preorder()): continue
+            if not any(isinstance(x, nd.Variable) for x in eqtree.iter_preorder()): continue
 
             N = self.args.uniform_sample_number or np.random.randint(100, 500)
             X_dict, Y = self.data_generator.generate_data(N, eqtree, return_X_dict=True)
             if X_dict is None: continue
             if self.args.normalize_y: Y = (Y - np.mean(Y)) / (np.std(Y) + 1e-6)
 
-            variables = list(set(x.name for x in eqtree.preorder() if isinstance(x, Variable)))
+            variables = list(set(x.name for x in eqtree.iter_preorder() if isinstance(x, nd.Variable)))
             L = len(eqtree)
             D = len(variables)
             K = random.randint(D, min(self.args.max_var, L))
             F = {}
             for i in range(D+1, K+1):
-                choices = [x for x in eqtree.preorder() if not isinstance(x, (Number, Variable))]
+                choices = [x for x in eqtree.iter_preorder() if not isinstance(x, (nd.Number, nd.Variable))]
                 prob = np.array([1/len(c) for c in choices])
-                f:Symbol = np.random.choice(choices, p=prob/prob.sum())
+                f:nd.Symbol = np.random.choice(choices, p=prob/prob.sum())
                 F[f'x_{i}'] = f
-                X_dict[f'x_{i}'] = f.eval(**X_dict) + 0 * Y  # 0 * Y 用于保持 Y 的 shape
+                X_dict[f'x_{i}'] = f.eval(X_dict) + 0 * Y  # 0 * Y 用于保持 Y 的 shape
                 L -= len(f) - 1
                 if f == eqtree: 
-                    eqtree = Variable(f'x_{i}')
+                    eqtree = nd.Variable(f'x_{i}')
                     break
-                f.replace(Variable(f'x_{i}'))
+                f.replace(nd.Variable(f'x_{i}'))
             if len(eqtree) != L: # 可能是哪里有 bug
                 logger.warning(f'L={L}, len(eqtree)={len(eqtree)}, eqtree={eqtree}, F={F}')
             if len(eqtree) > self.args.max_len: continue
@@ -340,7 +340,7 @@ class Num2EqDatasetKeep(Num2EqDataset):
             data = np.pad(X, ((0, 0), (0, self.args.max_var - X.shape[1])), constant_values=0)
             data = np.concatenate([data, Y[:, None]], axis=1)
 
-            variables = [var.name for var in eqtree.preorder() if isinstance(var, Variable)]
+            variables = [var.name for var in eqtree.iter_preorder() if isinstance(var, nd.Variable)]
             used_vars = [int(var in variables) for var in X_dict.keys()] + [0] * (self.args.max_var - len(X_dict))
 
             if self.args.save_equations > 0:
@@ -365,7 +365,7 @@ warnings.filterwarnings("ignore", message="Mean of empty slice")
 warnings.filterwarnings("ignore", message="Degrees of freedom <= 0 for slice.")
 
 class Num2EqDatasetLoad(Num2EqDataset):
-    def __init__(self, eqtrees:List[Symbol], args:AttrDict, beyond_token=False):
+    def __init__(self, eqtrees:List[nd.Symbol], args:AttrDict, beyond_token=False):
         super().__init__(args, beyond_token=beyond_token)
         self.eqtrees = eqtrees
         self.eqtree_generator = SimpleGenerator()
@@ -373,12 +373,12 @@ class Num2EqDatasetLoad(Num2EqDataset):
     def __getitem__(self, idx):
         while True:
             eqtree = random.choice(self.eqtrees).copy()
-            variables = list(set([var.name for var in eqtree.preorder() if isinstance(var, Variable)]))
+            variables = list(set([var.name for var in eqtree.iter_preorder() if isinstance(var, nd.Variable)]))
             mapping = {var: f'x_{i}' for i, var in enumerate(variables, 1)}
-            for var in eqtree.preorder():
-                if isinstance(var, Variable):
+            for var in eqtree.iter_preorder():
+                if isinstance(var, nd.Variable):
                     var.name = mapping[var.name]
-            variables = list(set([var for var in eqtree.preorder() if isinstance(var, Variable)]))
+            variables = list(set([var for var in eqtree.iter_preorder() if isinstance(var, nd.Variable)]))
 
             if self.args.simplify:
                 sympy_expr = str2sympy(str(eqtree))
@@ -390,7 +390,7 @@ class Num2EqDatasetLoad(Num2EqDataset):
                     if len(_eqtree) <= len(eqtree): eqtree = _eqtree
                 except:
                     continue
-            if not any(isinstance(x, Variable) for x in eqtree.preorder()): continue
+            if not any(isinstance(x, nd.Variable) for x in eqtree.iter_preorder()): continue
 
             N = self.args.uniform_sample_number or np.random.randint(100, 500)
             Z, Y = self.data_generator.generate_data(N, eqtree, return_X_dict=True)
@@ -399,7 +399,7 @@ class Num2EqDatasetLoad(Num2EqDataset):
             x_list, f = random.choice(random.choice(list(islice(decompose(eqtree), 0, 1000))))
             raw_x_list = [x.copy() for x in x_list]
             x_list = list(set(x_list))
-            x_list = list(filter(lambda x: not isinstance(x, Number), x_list))
+            x_list = list(filter(lambda x: not isinstance(x, nd.Number), x_list))
             if True or self.args.keep_vars: x_list = variables + list(set(x_list) - set(variables))
             used_vars = [1] * len(x_list)
 
@@ -409,11 +409,10 @@ class Num2EqDatasetLoad(Num2EqDataset):
                 self.eqtree_generator.max_var = len(x_list)
                 L = random.randint(1, 5)
                 F = self.eqtree_generator.generate_eqtree(L)
-                for var in F.preorder():
-                    if isinstance(var, Variable):
+                for var in F.iter_preorder():
+                    if isinstance(var, nd.Variable):
                         idx = int(var.name.split('_')[1])
-                        if var.parent: var.replace(x_list[idx-1])
-                        else: F = x_list[idx-1]
+                        F = F.replace(var, x_list[idx-1])
                 idx = random.randint(len(variables), len(x_list))
                 x_list.insert(idx, F)
                 used_vars.insert(idx, 0)
@@ -426,17 +425,16 @@ class Num2EqDatasetLoad(Num2EqDataset):
                 x_list.append(self.eqtree_generator.generate_eqtree(L))
             used_vars += [0] * D_n
 
-            for var in f.preorder():
-                if isinstance(var, Empty):
+            for var in f.iter_preorder():
+                if isinstance(var, nd.Empty):
                     x = raw_x_list.pop(0)
-                    x = x if isinstance(x, Number) else Variable(f'x_{x_list.index(x)+1}')
-                    if var.parent: var.replace(x)
-                    else: f = x
+                    x = x if isinstance(x, nd.Number) else nd.Variable(f'x_{x_list.index(x)+1}')
+                    f = f.replace(var, x)
             assert len(raw_x_list) == 0
             length = len(f)
             if length > self.args.max_len: continue
 
-            data = np.stack([x.eval(**Z)+0*Y for x in x_list], axis=-1)
+            data = np.stack([x.eval(Z)+0*Y for x in x_list], axis=-1)
             data = np.pad(data, ((0, 0), (0, self.args.max_var-data.shape[-1])), constant_values=0)
             if self.args.normalize_y: Y = (Y - Y.mean()) / (Y.std() + 1e-6)
             data = np.concatenate([data, Y[:, None]], axis=1)

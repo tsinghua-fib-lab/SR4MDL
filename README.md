@@ -4,9 +4,19 @@
 
 ## Installation
 
-We implement our method based on Python3.12.7. To install the package, you can run the following command:
+Before starting, you may wanna create a virtual environment to avoid conflicts with other packages:
 ```bash
-pip install sr4mdl
+conda create --prefix ./venv python=3.12 -y
+conda activate ./venv
+```
+Our code is based on nd2py library, which is a symbolic system written in pure Python. You can install it via pip or clone the repo:
+```bash
+# Install via pip
+pip install git+https://github.com/yuzhTHU/nd2py
+
+# Or clone the repo
+git clone https://github.com/yuzhTHU/nd2py nd2py_package
+pip install ./nd2py_package
 ```
 
 ## Train

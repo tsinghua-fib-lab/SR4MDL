@@ -347,16 +347,22 @@ class GP4MDL(BaseEstimator, RegressorMixin):
     def init_population(
         self, X: Dict[str, np.ndarray], y: np.ndarray
     ) -> List[Individual]:
+        """Initialize: 生成初始种群"""
+        # 现在的逻辑：每个个体都是相同的 (x1, x2, ..., xn)
+        # 被注释掉的逻辑：生成随机公式，再按加法切分为多个单项式 (f1, f2, ..., fn)
+        # 虽然后者是 GP 的标准做法，但发现好像不适合 MDL-guided 的方式，所以用了前者的逻辑
+        # 不一定管用，需要进一步探索别的方案
         population = []
         for _ in range(self.population_size):
-            eqtree = self.generator.generate_eqtree(nettype=self.nettype)
-            eqtrees = eqtree.split_by_add(
-                split_by_sub=True,
-                expand_mul=True,
-                expand_div=True,
-                merge_bias=True,
-                remove_coefficients=True,
-            )[:self.model.args.max_var-1]
+            # eqtree = self.generator.generate_eqtree(nettype=self.nettype)
+            # eqtrees = eqtree.split_by_add(
+            #     split_by_sub=True,
+            #     expand_mul=True,
+            #     expand_div=True,
+            #     merge_bias=True,
+            #     remove_coefficients=True,
+            # )[:self.model.args.max_var-1]
+            eqtrees = self.variables
             individual = Individual(eqtrees)
             self.set_fitness(individual, X, y)
             population.append(individual)

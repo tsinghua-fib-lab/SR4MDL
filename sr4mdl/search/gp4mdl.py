@@ -457,6 +457,16 @@ class GP4MDL(BaseEstimator, RegressorMixin):
                 child.eqtrees[idx] = eqtree.replace(node, sym)
         return child
 
+    def ignore_numpy_runtime_warnings(func):
+        import functools
+        import warnings
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with np.errstate(all="ignore"):
+                return func(*args, **kwargs)
+        return wrapper
+    
+    @ignore_numpy_runtime_warnings
     def set_fitness(
         self, individual: Individual, X: Dict[str, np.ndarray], y: np.ndarray
     ) -> Individual:

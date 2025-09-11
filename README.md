@@ -1,6 +1,8 @@
 # SR4MDL
 
-> Official implementation of the paper: **Symbolic regression via MDLformer-guided search: from minimizing prediction error to minimizing description length**.
+> Official implementation of the paper: **Symbolic regression via MDLformer-guided search: from minimizing prediction error to minimizing description length** (ICLR 2025), as well as its extended journal submission version:**An MDL-oriented Search Framework for Symbolic Regression** (submitting to TPAMI)
+
+> NOTE: We are organizing the code and data for the extended version (An MDL-oriented Search Framework for Symbolic Regression), which will be updated in a week (before Sep. 18, 2025).
 
 ## Installation
 

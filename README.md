@@ -44,6 +44,10 @@ To use the trained MDLformer model for symbolic regression, you have to:
 ```bash
 python search.py --load_model ./weights/checkpoint.pth --name demo --function "f=x1+x2*sin(x3)"
 ```
+or
+```bash
+python search_gp.py --load_model ./weights/checkpoint.pth --name demo --function "f=x1+x2*sin(x3)"
+```
 The running result will be shown in the terminal, as well as saved in the `./results/search/demo/` directory and `./results/aggregate.csv` file.
 
 If you wanna test this model on Feynman & Strogatz dataset, you have to:

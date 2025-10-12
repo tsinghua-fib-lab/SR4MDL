@@ -1,5 +1,6 @@
 import json
 import time
+# from pmlb.pmlb import StandardScaler
 import torch
 import logging
 import sklearn
@@ -15,8 +16,11 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from ..env.tokenizer import Tokenizer
 from ..model.mdlformer import MDLformer
 from functools import reduce
+from sr4mdl.utils import R2_score
 
 _logger = logging.getLogger(__name__)
+
+from sklearn.model_selection import train_test_split
 
 
 class Individual:
@@ -25,6 +29,7 @@ class Individual:
         self.phi = None
         self.complexity = None
         self.accuracy = None
+        self.nmse = None
         self.fitness = None
         self.MDL = None
 
@@ -44,9 +49,16 @@ class Individual:
         copy.phi = self.phi.copy() if self.phi is not None else None
         copy.complexity = self.complexity
         copy.accuracy = self.accuracy
+        copy.nmse = self.nmse
         copy.fitness = self.fitness
         copy.MDL = self.MDL
         return copy
+
+    def __eq__(self, other: "Individual") -> bool:
+        return frozenset(self.eqtrees) == frozenset(other.eqtrees)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.eqtrees))
 
 
 class GP4MDL(BaseEstimator, RegressorMixin):
@@ -72,8 +84,10 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         ],
         max_params: int = 2,
         elitism_k: int = 10,
+        elitism_k_r2: int = 10,
         population_size: int = 1000,
         tournament_size: int = 20,
+        p_combine: float = 0.05,
         p_crossover: float = 0.9,
         p_subtree_mutation: float = 0.01,
         p_hoist_mutation: float = 0.01,
@@ -94,12 +108,15 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         edge_list: Tuple[List[int], List[int]] = None,
         num_nodes: int = None,
         keep_vars=False,
-        normalize_y=False,
-        normalize_all=False,
+        normalize_y=True,
+        normalize_all=True,
         remove_abnormal=False,
         train_eval_split: float = 0.25,
-        c=1.41,
+        c=0.025,
+        m=40,
         eta=0.999,
+        eps = 1e-6,
+        patience = 60,
         **kwargs,
     ):
         """
@@ -137,16 +154,23 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         self.remove_abnormal = remove_abnormal
 
         self.eqtree = None
+        self.best = None
+        # val best info
+        self.val_best_r2val = -np.inf
+        self.val_best = None
+        self.val_best_eqtree = None
         self.variables = variables
         self.binary = binary
         self.unary = unary
         self.max_params = max_params
         self.elitism_k = elitism_k
+        self.elitism_k_r2 = elitism_k_r2
         self.random_state = random_state
         self._rng = default_rng(random_state)
         self.nettype = nettype
         self.train_eval_split = train_eval_split
 
+        self.p_combine = p_combine
         self.p_crossover = p_crossover
         self.p_subtree_mutation = p_subtree_mutation
         self.p_hoist_mutation = p_hoist_mutation
@@ -159,6 +183,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         self.population_size = population_size
         self.tournament_size = tournament_size
         self.method_probs = {
+            "combine": p_combine,
             "crossover": p_crossover,  # replace a subtree of parents with a subtree of another parent
             "subtree-mutation": p_subtree_mutation,  # replace a subtree of parent with a random tree
             "hoist-mutation": p_hoist_mutation,  # select a random subtree of parent
@@ -194,6 +219,10 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         self.num_nodes = num_nodes
         self.eta = eta
         self.c = c
+        self.m = m
+        self.eps = eps
+        self.patience = patience
+        self.iter = 0
 
         if kwargs:
             _logger.warning(
@@ -204,6 +233,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         self,
         X: np.ndarray | pd.DataFrame | Dict[str, np.ndarray],
         y: np.ndarray | pd.Series,
+        timeout = np.inf
     ):
         """
         Args:
@@ -218,25 +248,58 @@ class GP4MDL(BaseEstimator, RegressorMixin):
             X = {k: np.asarray(v) for k, v in X.items()}
         else:
             raise ValueError(f"Unknown type: {type(X)}")
+            
+        # 将 X 转换为适合 train_test_split 的格式
+        X_arrays = list(X.values())  # 获取所有变量的 numpy 数组
+        X_stacked = np.column_stack(X_arrays)  # 按列堆叠成一个二维数组
+
+        # 划分训练集和验证集
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_stacked, y, test_size=self.train_eval_split, random_state=self.random_state
+        )
+
+        # 如果需要，可以将 X_train 和 X_val 转换回字典格式
+        X_train = {key: X_train[:, i] for i, key in enumerate(X.keys())}
+        X_val = {key: X_val[:, i] for i, key in enumerate(X.keys())}
 
         self.start_time = time.time()
-        population = self.init_population(X, y)
+        population = self.init_population(X_train, y_train)
+
+        # early stop
+        n_overfit = 0
+
         for iter in tqdm(range(1, 1 + self.n_iter), disable=not self.use_tqdm):
-            population = self.evolve(population, X, y)
+            population = self.evolve(population, X_train, y_train)
 
             self.speed_timer.add()
-            best = max(population, key=lambda x: x.fitness).copy()
-            self.eqtree = best.phi
+            self.best = min(population, key=lambda x: x.accuracy).copy() if population else self.best
+            self.eqtree = self.best.phi
+            y_pred_val = self.eqtree.eval(vars=X_val)
+            try:
+                assert np.isfinite(y_pred_val).all()
+                r2_val = R2_score(y_val, y_pred_val)
+            except Exception as e:
+                r2_val = -np.inf
+            if r2_val >= self.val_best_r2val - 1e-6:
+                if r2_val > self.val_best_r2val:
+                    self.val_best_r2val = r2_val
+                    self.val_best_eqtree = self.eqtree.copy()
+                    self.val_best = self.best.copy()
+                n_overfit = 0
+            else:
+                n_overfit += 1
             record = dict(
                 iter=iter,
                 time=time.time() - self.start_time,
-                fitness=best.fitness,
-                complexity=best.complexity,
-                mse=best.accuracy,
-                r2=float(1 - best.accuracy / y.var()),
-                eqtree=str(best),
+                fitness=self.best.fitness,
+                complexity=self.best.complexity,
+                mse_train=self.best.accuracy,
+                r2_train=float(1 - self.best.accuracy / y_train.var()),
+                r2_val=r2_val,
+                eqtree=str(self.best),
                 population_size=len(population),
             )
+            self.iter = iter
             if (
                 not iter % self.log_per_iter
                 or self.named_timer.total_time() > self.log_per_sec
@@ -245,8 +308,9 @@ class GP4MDL(BaseEstimator, RegressorMixin):
                 log["Iter"] = record["iter"]
                 log["Fitness"] = record["fitness"]
                 log["Complexity"] = record["complexity"]
-                log["MSE"] = record["mse"]
-                log["R2"] = record["r2"]
+                log["MSEt"] = record["mse_train"]
+                log["R2t"] = record["r2_train"]
+                log["R2v"] = record["r2_val"]
                 log["Best equation"] = record["eqtree"]
                 if self.log_detailed_speed:
                     log["Speed"] = str(self.speed_timer)
@@ -265,16 +329,21 @@ class GP4MDL(BaseEstimator, RegressorMixin):
             if self.save_path:
                 with open(self.save_path, "a") as f:
                     f.write(json.dumps(record) + "\n")
-            if best.accuracy < 1e-6:
+            if 1 - r2_val < self.eps or n_overfit >= self.patience:
                 _logger.info(
-                    f"Early stopping at iter {iter} with accuracy {best.accuracy} ({best})"
+                    f"Early stopping at iter {iter} with R2 {r2_val} ({self.best})"
+                )
+                break
+            if time.time() - self.start_time > timeout:
+                _logger.info(
+                    f"TimeOut at iter {iter} with R2 {r2_val} ({self.best})"
                 )
                 break
             self.named_timer.add("postprocess")
         return self
 
     def predict(
-        self, X: np.ndarray | pd.DataFrame | Dict[str, np.ndarray]
+        self, X: np.ndarray | pd.DataFrame | Dict[str, np.ndarray],
     ) -> np.ndarray:
         """
         Args:
@@ -293,7 +362,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
             pass
         else:
             raise ValueError(f"Unknown type: {type(X)}")
-        return self.eqtree.eval(vars=X)
+        return self.val_best_eqtree.eval(vars=X)
 
     def evolve(
         self,
@@ -302,46 +371,77 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         y: np.ndarray,
         children_size=None,
         elitism_k=None,
-    ) -> List[Individual]:
+        elitism_k_r2=None,
+    ) -> List[Individual]:        
         if children_size is None:
             children_size = self.population_size
         if elitism_k is None:
             elitism_k = self.elitism_k
+        if elitism_k_r2 is None:
+            elitism_k_r2 = self.elitism_k_r2
         assert (
-            children_size > elitism_k
-        ), f"children_size {children_size} must be greater than elitism_k {elitism_k}"
+            children_size > elitism_k + elitism_k_r2
+        ), f"children_size {children_size} must be greater than elitism_k {elitism_k + elitism_k_r2}"
 
         children = []
 
-        top_k = sorted(population, key=lambda x: x.fitness, reverse=True)[:elitism_k]
+        # top_k = sorted(population, key=lambda x: x.fitness, reverse=True)[:elitism_k]
+        top_k = sorted(list(set(population)), key=lambda x: x.fitness, reverse=True)
+        if len(top_k) < elitism_k:
+            top_k = sorted(population, key=lambda x: x.fitness, reverse=True)
+        top_k = top_k[:elitism_k]
         children.extend(top_k)
 
+        top_k_r2 = sorted(list(set(population)), key=lambda x: x.accuracy, reverse=False)
+        if len(top_k_r2) < elitism_k_r2:
+            top_k_r2 = sorted(population, key=lambda x: x.accuracy, reverse=False)
+        top_k_r2 = top_k_r2[:elitism_k_r2]
+        children.extend(top_k_r2)
+
+        seen_eqtrees = {}  # 记录已生成的 eqtree 字符串及出现次数
         for parent in tqdm(
-            self.tournament(population, children_size - elitism_k),
+            self.tournament(population, children_size - elitism_k - elitism_k_r2),
             disable=not self.use_tqdm,
         ):
-            method = list(self.method_probs.keys())[
-                np.searchsorted(
-                    np.cumsum(list(self.method_probs.values())), self._rng.random()
-                )
-            ]
-            if method == "crossover":
-                donor = self.tournament(population, 1)[0]
-                child = self.crossover(parent, donor)
-            elif method == "subtree-mutation":
-                child = self.subtree_mutation(parent)
-            elif method == "hoist-mutation":
-                child = self.hoist_mutation(parent)
-            elif method == "point-mutation":
-                child = self.point_mutation(parent)
-            elif method == "reproduction":
-                child = parent.copy()
-            else:
-                raise ValueError(f"Unknown method: {method}")
-            self.named_timer.add("evolve")
-            self.set_fitness(child, X, y)
-            children.append(child)
-            self.named_timer.add("evaluate")
+            while True:
+                method = list(self.method_probs.keys())[
+                    np.searchsorted(
+                        np.cumsum(list(self.method_probs.values())), self._rng.random()
+                    )
+                ]
+                if method == "crossover":
+                    donor = self.tournament(population, 1)[0]
+                    child = self.crossover(parent, donor)
+                elif method == "combine":
+                    child = self.combine(parent)
+                elif method == "subtree-mutation":
+                    child = self.subtree_mutation(parent)
+                elif method == "hoist-mutation":
+                    child = self.hoist_mutation(parent)
+                elif method == "point-mutation":
+                    child = self.point_mutation(parent)
+                elif method == "reproduction":
+                    child = parent.copy()
+                else:
+                    raise ValueError(f"Unknown method: {method}")
+                # 去重，去掉child里重复的元素
+                child.eqtrees = list(set(child.eqtrees))
+                # 超过10个则随机取10个
+                if len(child.eqtrees) > 10:
+                    child.eqtrees = self._rng.choice(child.eqtrees, 10, replace=False).tolist()                # 判断是否重复过多
+                eqtree_hash = hash(frozenset(child.eqtrees))
+                count = seen_eqtrees.get(eqtree_hash, 0)
+
+                if count >= 10:
+                    continue  # 超过 10 个，跳过这个 child，重新生成
+                else:
+                    seen_eqtrees[eqtree_hash] = count + 1
+                    self.named_timer.add("evolve")
+                    self.set_fitness(child, X, y)
+                    children.append(child)
+                    self.named_timer.add("evaluate")
+                    break
+
         return children
 
     def init_population(
@@ -362,7 +462,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
             #     merge_bias=True,
             #     remove_coefficients=True,
             # )[:self.model.args.max_var-1]
-            eqtrees = self.variables
+            eqtrees = self.variables if len(self.variables) <= 10 else self._rng.choice(self.variables, size=10, replace=False)
             individual = Individual(eqtrees)
             self.set_fitness(individual, X, y)
             population.append(individual)
@@ -378,11 +478,12 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         return winners
 
     def crossover(self, parent: Individual, donor: Individual) -> Individual:
-        """Crossover: 用 donor 的某个子树替换 parent 的某个子树"""
+        #Crossover: 用 donor 的某个子树替换 parent 的某个子树
         # 现在的逻辑：将 child.eqtrees 合并为一个树，donor.eqtrees 也合并为一个树，
         # 然后从 donor 中选择一个子树替换 child 的某个子树。
         # 再把替换后的结果按照 add 拆分成多个 eqtree。
         # 不一定管用，需要进一步探索别的方案
+        # 现在相当于把一个树的子树和人家的互换，其他的树交换
         child = parent.copy()
         child_tree = reduce(lambda x, y: x + y, child.eqtrees)
         donor_tree = reduce(lambda x, y: x + y, donor.eqtrees)
@@ -392,11 +493,13 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         )
         new_tree = child_tree.replace(removed_subtree, donored_subtree)
         child.eqtrees = new_tree.split_by_add(merge_bias=True, remove_coefficients=True)[:self.model.args.max_var-1]
-        return child
+        return child 
+        
 
     def subtree_mutation(self, parent: Individual) -> Individual:
         """Subtree mutation: 用一个随机树替换某个子树"""
         # 同上，不一定管用，需要进一步探索别的方案
+        # 相当于把一个树的子树换成随机的，其他树直接换成随机的树
         child = parent.copy()
         child_tree = reduce(lambda x, y: x + y, child.eqtrees)
         subtree = self.get_random_subtree(child_tree)
@@ -408,6 +511,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
     def hoist_mutation(self, parent: Individual) -> Individual:
         """Hoist mutation: 用某个子树替换根节点"""
         # 同上，不一定管用，需要进一步探索别的方案
+        # 相当于把一个树的根节点换成随机子树，其他树直接删掉
         child = parent.copy()
         child_tree = reduce(lambda x, y: x + y, child.eqtrees)
         subtree = self.get_random_subtree(child_tree)
@@ -417,6 +521,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
     def point_mutation(self, parent: Individual) -> Individual:
         """Point mutation: 用随机符号替换 / 插入某个节点"""
         # 同上，不一定管用，需要进一步探索别的方案
+        # 这个就是正常的随机换
         child = parent.copy()
         for idx, eqtree in enumerate(child.eqtrees):
             mutate_nodes = [
@@ -456,7 +561,22 @@ class GP4MDL(BaseEstimator, RegressorMixin):
                     raise ValueError(f"Unknown arity: {node.n_operands}")
                 child.eqtrees[idx] = eqtree.replace(node, sym)
         return child
-
+    def combine(self, parent: Individual) -> Individual:
+        # 新增方法，随机选择一个方法（结点），用这个方法作为根结点，后面链接随机的几个eqtree，替换掉这些eqtree
+        child = parent.copy()
+        if child.eqtrees.__len__() == 0:
+            return child
+        new_tree = self.generator.generate_node(nettype={child.eqtrees[0].nettype}) # 这个地方可能有bug，这个nettype怎么处理需要问一下
+        ope = new_tree.operands.copy()
+        if(ope.__len__() >= child.eqtrees.__len__()):
+            return child
+        # 从child.eqtrees里随机选择几个eqtree并从child.eqtrees里删掉
+        indexs = self._rng.choice(range(child.eqtrees.__len__()), ope.__len__(), replace=False)
+        for idx, i in enumerate(indexs):
+            new_tree = new_tree.replace(ope[idx], child.eqtrees[i])
+        # child.eqtrees = [x for i, x in enumerate(child.eqtrees) if i not in indexs]
+        child.eqtrees.append(new_tree)
+        return child
     def ignore_numpy_runtime_warnings(func):
         import functools
         import warnings
@@ -496,6 +616,7 @@ class GP4MDL(BaseEstimator, RegressorMixin):
             A, _, _, _ = np.linalg.lstsq(Z[train_idx, :], y[train_idx], rcond=None)
             A = np.round(A, 6)
             individual.accuracy = np.mean((Z[eval_idx, :] @ A - y[eval_idx])**2)
+            individual.nmse = individual.accuracy / np.var(y[eval_idx])
             individual.phi = nd.Number(A[0]) if A[0] != 0 else None
             for a, op in zip(A[1:], individual.eqtrees):
                 if a == 0:
@@ -517,101 +638,109 @@ class GP4MDL(BaseEstimator, RegressorMixin):
                         individual.phi += nd.Number(a) * op
             if individual.phi is None:
                 individual.phi = nd.Number(0.0)
-            individual.complexity = len(individual.phi)
-            individual.fitness = self.eta**individual.complexity / (2 - individual.accuracy) + self.c / individual.MDL
+            # individual.complexity = len(individual.phi)
+            # 把complexity改成eqtree里最长的树的长度
+            individual.complexity = max([len(eqtree) for eqtree in individual.eqtrees])
+            individual.fitness = self.eta**individual.complexity * ( 1 / (0.1 + individual.accuracy / np.var(y[train_idx])) + self.c * self.m / (1 + individual.MDL / self.m))
         except Exception as e:
             _logger.warning(traceback.format_exc())
             individual.accuracy = np.inf
             individual.complexity = np.inf
             individual.fitness = -np.inf
 
-        # prod model as phi: y = phi(f1, f2, ...) = a0 * |f1|^a1 * |f2|^a2 * ...
-        try:
-            Z_ = np.log(np.abs(Z).clip(1e-10, None))
-            Z_[:, 0] = 1.0
-            y_ = np.log(np.abs(y).clip(1e-10, None))
-            assert np.isfinite(Z_).all() and np.isfinite(y_).all()
-            A, _, _, _ = np.linalg.lstsq(Z_[train_idx, :], y_[train_idx], rcond=None)
-            A[0] = np.exp(A[0])
-            A = np.round(A, 6)
-            prod = 1
-            for z, a in zip(Z[:, 1:].T, A[1:]):
-                prod *= np.abs(z) ** a
-            A[0] *= np.sign(
-                np.median(y[train_idx] / (A[0] * prod[train_idx]).clip(1e-6))
-            )
-            accuracy = np.mean((y[eval_idx] - A[0] * prod[eval_idx]) ** 2)
-            fitness = self.eta**individual.complexity / (2 - accuracy) + self.c / individual.MDL
-            if fitness > individual.fitness:
-                individual.accuracy = accuracy
-                individual.fitness = fitness
-                individual.phi = nd.Number(A[0]) if A[0] != 1 else None
-                for idx, (a, op) in enumerate(zip(A[1:], individual.eqtrees), 1):
-                    if (Z[idx] < 0).any():
-                        op = nd.Abs(op)
-                    if a == 0:
-                        pass
-                    elif a == 1:
-                        if individual.phi is None:
-                            individual.phi = op
-                        else:
-                            individual.phi *= op
-                    elif a == -1:
-                        if individual.phi is None:
-                            individual.phi = nd.Inv(op)
-                        else:
-                            individual.phi /= op
-                    elif a == 2:
-                        if individual.phi is None:
-                            individual.phi = nd.Pow2(op)
-                        else:
-                            individual.phi *= nd.Pow2(op)
-                    elif a == -2:
-                        if individual.phi is None:
-                            individual.phi = nd.Inv(nd.Pow2(op))
-                        else:
-                            individual.phi /= nd.Pow2(op)
-                    elif a == 3:
-                        if individual.phi is None:
-                            individual.phi = nd.Pow3(op)
-                        else:
-                            individual.phi *= nd.Pow3(op)
-                    elif a == -3:
-                        if individual.phi is None:
-                            individual.phi = nd.Inv(nd.Pow3(op))
-                        else:
-                            individual.phi /= nd.Pow3(op)
-                    elif a == 0.5:
-                        if individual.phi is None:
-                            individual.phi = nd.Sqrt(op)
-                        else:
-                            individual.phi *= nd.Sqrt(op)
-                    elif a == -0.5:
-                        if individual.phi is None:
-                            individual.phi = nd.Inv(nd.Sqrt(op))
-                        else:
-                            individual.phi /= nd.Sqrt(op)
-                    elif a > 0:
-                        if individual.phi is None:
-                            individual.phi = op ** nd.Number(a)
-                        else:
-                            individual.phi *= op ** nd.Number(a)
-                    elif a < 0:
-                        if individual.phi is None:
-                            individual.phi = nd.Inv(op ** nd.Number(-a))
-                        else:
-                            individual.phi /= op ** nd.Number(-a)
-                    else:
-                        raise ValueError(f"Unknown a: {a}")
-                if individual.phi is None:
-                    individual.phi = nd.Number(1.0)
-                individual.complexity = len(individual.phi)
-        except Exception as e:
-            _logger.warning(traceback.format_exc())
-            # logger.warning(str(e))
-            individual.accuracy = -np.inf
-            individual.complexity = np.inf
-            individual.fitness = 0.0
+        # # prod model as phi: y = phi(f1, f2, ...) = a0 * |f1|^a1 * |f2|^a2 * ...
+        # try:
+        #     Z_ = np.log(np.abs(Z).clip(1e-10, None))
+        #     Z_[:, 0] = 1.0
+        #     y_ = np.log(np.abs(y).clip(1e-10, None))
+        #     assert np.isfinite(Z_).all() and np.isfinite(y_).all()
+        #     A, _, _, _ = np.linalg.lstsq(Z_[train_idx, :], y_[train_idx], rcond=None)
+        #     A[0] = np.exp(A[0])
+        #     A = np.round(A, 6)
+        #     prod = 1
+        #     for z, a in zip(Z[:, 1:].T, A[1:]):
+        #         prod *= np.abs(z) ** a
+        #     A[0] *= np.sign(
+        #         np.median(y[train_idx] / (A[0] * prod[train_idx]).clip(1e-6))
+        #     )
+        #     accuracy = np.mean((y[eval_idx] - A[0] * prod[eval_idx]) ** 2)
+        #     individual.nmse = accuracy / np.var(y[eval_idx])
+        #     # fitness = self.eta**individual.complexity * (1 / (0.01 + accuracy/np.std(y[eval_idx])) + self.c / individual.MDL)
+        #     fitness = self.eta**individual.complexity * (1 / (0.1 + accuracy/np.var(y[eval_idx])) +  self.c * self.m / (1 + individual.MDL/self.m))
+        #     # fitness = self.eta**individual.complexity * (1 / (0.1 + accuracy/np.std(y[eval_idx])) + self.c * (50 - individual.MDL))
+        #     # fitness = self.eta**individual.complexity * (1 / (0.1 + accuracy/np.std(y[eval_idx])) + self.c / individual.MDL)
+        #     # fitness = self.eta**individual.complexity * (1 / (0.1 + accuracy/np.var(y[eval_idx])) + self.c * (self.m - individual.MDL)) if individual.MDL < self.m else self.eta**individual.complexity * (1 / (0.1 + accuracy/np.std(y[eval_idx])))
+
+        #     if fitness > individual.fitness:
+        #         individual.accuracy = accuracy
+        #         individual.fitness = fitness
+        #         individual.phi = nd.Number(A[0]) if A[0] != 1 else None
+        #         for idx, (a, op) in enumerate(zip(A[1:], individual.eqtrees), 1):
+        #             if (Z[idx] < 0).any():
+        #                 op = nd.Abs(op)
+        #             if a == 0:
+        #                 pass
+        #             elif a == 1:
+        #                 if individual.phi is None:
+        #                     individual.phi = op
+        #                 else:
+        #                     individual.phi *= op
+        #             elif a == -1:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Inv(op)
+        #                 else:
+        #                     individual.phi /= op
+        #             elif a == 2:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Pow2(op)
+        #                 else:
+        #                     individual.phi *= nd.Pow2(op)
+        #             elif a == -2:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Inv(nd.Pow2(op))
+        #                 else:
+        #                     individual.phi /= nd.Pow2(op)
+        #             elif a == 3:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Pow3(op)
+        #                 else:
+        #                     individual.phi *= nd.Pow3(op)
+        #             elif a == -3:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Inv(nd.Pow3(op))
+        #                 else:
+        #                     individual.phi /= nd.Pow3(op)
+        #             elif a == 0.5:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Sqrt(op)
+        #                 else:
+        #                     individual.phi *= nd.Sqrt(op)
+        #             elif a == -0.5:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Inv(nd.Sqrt(op))
+        #                 else:
+        #                     individual.phi /= nd.Sqrt(op)
+        #             elif a > 0:
+        #                 if individual.phi is None:
+        #                     individual.phi = op ** nd.Number(a)
+        #                 else:
+        #                     individual.phi *= op ** nd.Number(a)
+        #             elif a < 0:
+        #                 if individual.phi is None:
+        #                     individual.phi = nd.Inv(op ** nd.Number(-a))
+        #                 else:
+        #                     individual.phi /= op ** nd.Number(-a)
+        #             else:
+        #                 raise ValueError(f"Unknown a: {a}")
+        #         if individual.phi is None:
+        #             individual.phi = nd.Number(1.0)
+        #         individual.complexity = max([len(eqtree) for eqtree in individual.eqtrees])
+        # except Exception as e:
+        #     _logger.warning(traceback.format_exc())
+        #     # logger.warning(str(e))
+        #     individual.accuracy = np.inf
+        #     individual.complexity = np.inf
+        #     individual.fitness = 0.0
 
         if not np.isfinite(individual.fitness):
             individual.fitness = 0.0
@@ -654,6 +783,11 @@ class GP4MDL(BaseEstimator, RegressorMixin):
 
     def estimate_MDL(self, individuals:Individual|List[Individual], X:Dict[str,np.ndarray], y:np.ndarray, batch_size=64) -> float:
         if isinstance(individuals, Individual): individuals = [individuals]
+        # 采样
+        if len(y) > 800:
+            indices = self._rng.choice(len(y), size=800, replace=False)
+            sampled_X = {key: value[indices] for key, value in X.items()}
+            X, y = sampled_X, y[indices]
         batch = np.zeros((len(individuals), y.shape[0], self.model.args.max_var+1)) # (B, N_i, D_max+1,)
         for idx, indiv in enumerate(individuals):
             for i, eqtree in enumerate(indiv.eqtrees): 
@@ -669,3 +803,18 @@ class GP4MDL(BaseEstimator, RegressorMixin):
         for indiv, c in zip(individuals, pred):
             indiv.MDL = c
         return pred if len(individuals) > 1 else pred[0]
+
+    def refit_val_best(self, X, y):
+        if self.val_best is None:
+            raise ValueError("Model not fitted yet")
+
+        if isinstance(X, np.ndarray):
+            X = {f"x_{i+1}": X[:, i] for i in range(X.shape[1])}
+        elif isinstance(X, pd.DataFrame):
+            X = {col: X[col].values for col in X.columns}
+        elif isinstance(X, dict):
+            pass
+        else:
+            raise ValueError(f"Unknown type: {type(X)}")
+        self.set_fitness(self.val_best, X, y)
+        self.val_best_eqtree = self.val_best.phi
